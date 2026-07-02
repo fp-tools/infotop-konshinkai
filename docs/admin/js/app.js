@@ -345,7 +345,7 @@ async function importFromApi(eid){
   let data;try{const res=await fetch(s.formApiUrl,{headers:s.formApiToken?{'Authorization':'Bearer '+s.formApiToken}:{}});if(!res.ok)throw new Error('HTTP '+res.status);data=await res.json();}catch(err){alert('API取得に失敗しました：'+err+'\n（CORS設定やトークンをご確認ください）');return;}
   const arr=Array.isArray(data)?data:(data.items||data.data||data.records||[]);if(!arr.length){alert('データが空でした。');return;}
   const pick=(o,keys)=>{for(const k of keys){for(const kk in o){if(kk.toLowerCase()===k)return o[kk];}}return '';};
-  const recs=arr.map(o=>({name:pick(o,['name','氏名','名前','username']),kana:pick(o,['kana','フリガナ']),company:pick(o,['company','会社','会社名','屋号']),email:pick(o,['email','mail','usermail','メール','メールアドレス']),phone:pick(o,['phone','tel','電話','電話番号']),amount:Number(String(pick(o,['amount','参加費','金額','price'])||'').replace(/[^\d.-]/g,''))||null,groupId:String(pick(o,['order','orderid','注文id','申込id','groupid'])||''),orderId:String(pick(o,['order','orderid','注文id'])||''),raw:o}));
+  const recs=arr.map(o=>({name:pick(o,['name','氏名','名前','username']),kana:pick(o,['kana','フリガナ']),company:pick(o,['company','会社','会社名','屋号']),email:pick(o,['email','mail','usermail','メール','メールアドレス']),phone:pick(o,['phone','tel','電話','電話番号']),amount:Number(String(pick(o,['amount','参加費','金額','price'])||'').replace(/[^\d.-]/g,''))||null,groupId:String(pick(o,['申込番号','order','orderid','注文id','申込id','groupid','no'])||''),orderId:String(pick(o,['order','orderid','注文id'])||''),raw:o}));
   _csvStaging={eid,recs};const e=getEvent(eid);let nw=0,upd=0;
   recs.forEach(r=>{const m=r.email&&(e.participants||[]).find(p=>normEmail(p.email)===normEmail(r.email));if(m)upd++;else nw++;});
   if(!confirm('フォームAPIから '+recs.length+'件 取得しました。\n新規 '+nw+' / 既存一致 '+upd+'（編集項目は保持）。取り込みますか？'))return;
@@ -446,7 +446,7 @@ function tabParticipants(e){
     +'<button class="btn sm" onclick="exportParticipants(\''+e.id+'\')">'+ic('download',14)+' CSV出力</button></div></div>';
   if(!ps.length)return h+emptyState(ic('users',40),'参加者がいません','フォームのCSV/APIを取り込むか、手動で追加してください。','');
   h+='<div class="banner">1申込に複数名は「お連れ様」として申込者にぶら下げて表示します。「編集」マークは手動編集済みで再取込でも保持。各行のQRで受付用コードを発行できます。</div>';
-  h+='<div class="card" style="overflow:auto"><table><thead><tr><th>氏名 / フリガナ</th><th>会社・屋号</th><th>メール</th><th>種別</th><th>参加費</th><th>決済</th><th>二次会</th><th>申込G</th><th></th></tr></thead><tbody>';
+  h+='<div class="card" style="overflow:auto"><table><thead><tr><th>氏名 / フリガナ</th><th>会社・屋号</th><th>メール</th><th>種別</th><th>参加費</th><th>決済</th><th>二次会</th><th>申込番号 <span class="hint" title="領収書の再取得・修正ページのログインに使われます">?</span></th><th></th></tr></thead><tbody>';
   orderedParticipants(e).forEach(p=>{const comp=!isMain(p);
     h+='<tr style="'+(comp?'background:#fbfcfe':'')+'"><td>'+(comp?'<span style="color:var(--muted)">└ </span><span class="tag gray">お連れ様</span> ':'')+'<b>'+(esc(p.name)||'<span class="hint">未入力</span>')+'</b>'+(p.kana?'<div class="hint">'+(comp?'　':'')+esc(p.kana)+'</div>':'')+(p.edited.length?' <span class="tag warn">編集</span>':'')+'</td>'
     +'<td>'+esc(p.company)+'</td><td>'+esc(p.email)+'</td>'
@@ -465,12 +465,12 @@ function editParticipant(eid,pid){
   const optSel='<select id="pf_opt"><option value="">（基本料金 '+yen(e.fee)+'）</option>'+(e.feeOptions||[]).map(o=>'<option value="'+esc(o.label)+'|'+o.amount+'" '+(p.feeOptLabel===o.label?'selected':'')+'>'+esc(o.label)+'：'+yen(o.amount)+'</option>').join('')+'</select>';
   const parent=p.companionOf&&e.participants.find(x=>x.id===p.companionOf);
   modal((parent?'お連れ様情報':'参加者情報'),
-    (parent?'<div class="banner">'+esc(parent.name)+' 様の<b>お連れ様</b>として登録されています（申込G: '+(esc(p.groupId)||'-')+'）。</div>':'')+
+    (parent?'<div class="banner">'+esc(parent.name)+' 様の<b>お連れ様</b>として登録されています（申込番号: '+(esc(p.groupId)||'-')+'）。</div>':'')+
     '<div class="row"><label class="fld" style="flex:1"><span>氏名</span><input id="pf_name" value="'+esc(p.name)+'"></label><label class="fld" style="flex:1"><span>フリガナ</span><input id="pf_kana" value="'+esc(p.kana)+'"></label></div>'
     +'<label class="fld"><span>会社・屋号</span><input id="pf_company" value="'+esc(p.company)+'"></label>'
     +'<div class="row"><label class="fld" style="flex:1"><span>メールアドレス</span><input id="pf_email" value="'+esc(p.email)+'"></label><label class="fld" style="flex:1"><span>電話番号</span><input id="pf_phone" value="'+esc(p.phone)+'"></label></div>'
     +'<div class="row"><label class="fld" style="flex:1"><span>参加費オプション</span>'+optSel+'</label><label class="fld" style="flex:1"><span>参加費（円）</span><input id="pf_amount" type="number" value="'+(p.amount??'')+'"></label></div>'
-    +'<div class="row"><label class="fld" style="flex:1"><span>申込グループ <span class="hint">同時申込・別会計の紐付け</span></span><input id="pf_group" value="'+esc(p.groupId)+'" placeholder="例）ORDER-1234"></label><label class="fld" style="flex:1"><span>二次会</span><br><label class="chk"><input type="checkbox" id="pf_sp" '+(p.secondParty?'checked':'')+'> 二次会に参加</label></label></div>'
+    +'<div class="row"><label class="fld" style="flex:1"><span>申込番号 <span class="hint">同時申込の紐付け＋領収書ページのログインに使用</span></span><input id="pf_group" value="'+esc(p.groupId)+'" placeholder="例）55981"></label><label class="fld" style="flex:1"><span>二次会</span><br><label class="chk"><input type="checkbox" id="pf_sp" '+(p.secondParty?'checked':'')+'> 二次会に参加</label></label></div>'
     +'<label class="fld"><span>備考メモ</span><textarea id="pf_note" rows="2">'+esc(p.note)+'</textarea></label>'
     +'<div class="hint">基本情報を編集すると「編集」が付き、CSV/API再取込でも保持されます。</div>',
     [{label:'この参加者を削除',cls:'btn danger',on:"removeParticipant('"+eid+"','"+pid+"')"},{label:'保存',cls:'btn primary',on:"saveParticipant('"+eid+"','"+pid+"')"}],600);
@@ -501,7 +501,7 @@ function tabReception(e){
   h+='<div class="card pad" style="margin-bottom:16px;display:flex;align-items:center;gap:16px;background:linear-gradient(90deg,#10182a,#1c2a4a);color:#fff;border:0"><div style="flex:1"><div style="font-size:16px;font-weight:700">'+ic('scan',18)+' QR受付スキャン</div><div style="font-size:12.5px;color:#aeb9cd;margin-top:2px">参加者のQRをかざして本人確認 → 変更なければそのまま受付完了。未払いはその場で決済。</div></div><button class="btn primary" style="font-size:15px;padding:12px 22px" onclick="receptionScan(\''+e.id+'\')">'+ic('scan',16)+' スキャン開始</button></div>';
   h+='<div class="between" style="margin-bottom:10px"><b>当日受付リスト</b><div class="flex"><input id="recSearch" placeholder="氏名・会社で検索" style="width:200px" oninput="filterReception()"><button class="btn sm" onclick="syncPayments(\''+e.id+'\')">'+ic('sync',14)+' 決済情報を同期</button><button class="btn sm" onclick="addWalkin(\''+e.id+'\')">'+ic('plus',14)+' 当日参加(増)</button></div></div>';
   h+='<div class="banner">QRが無い場合も、行の「受付」から本人確認＆決済できます。当日の人数増減・領収書変更に対応。</div>';
-  h+='<div class="card" style="overflow:auto"><table id="recTable"><thead><tr><th>状態</th><th>氏名 / 会社</th><th>申込G</th><th>参加費</th><th>決済</th><th>領収書 宛名</th><th></th></tr></thead><tbody>';
+  h+='<div class="card" style="overflow:auto"><table id="recTable"><thead><tr><th>状態</th><th>氏名 / 会社</th><th>申込番号</th><th>参加費</th><th>決済</th><th>領収書 宛名</th><th></th></tr></thead><tbody>';
   orderedParticipants(e).forEach(p=>{const comp=!isMain(p);h+='<tr data-name="'+esc((p.name||'')+(p.company||'')+(p.kana||''))+'" style="'+(p.checkedIn?'background:#f4fbf7':comp?'background:#fbfcfe':'')+'">'
     +'<td>'+(p.checkedIn?'<span class="tag ok">'+ic('check',11)+' 受付済</span>':'<span class="tag gray">未</span>')+'</td>'
     +'<td>'+(comp?'<span style="color:var(--muted)">└ </span><span class="tag gray">連れ</span> ':'')+'<b>'+esc(p.name)+'</b>'+(p.kana?'<div class="hint">'+(comp?'　':'')+esc(p.kana)+'</div>':'')+(p.company?'<div class="hint">'+esc(p.company)+'</div>':'')+'</td>'
@@ -665,12 +665,13 @@ function tabReceipts(e){
     +'<button class="btn sm primary" onclick="sendAllReceipts(\''+e.id+'\')">未送信を一括発行・送信</button></div></div>'
     +'<div class="hint" style="margin-bottom:10px">領収書はPNG画像を<b>メールに添付</b>して送信します（本文には記載しません）。番号は発行順の連番（IS-E00001）で、発行後に宛名・金額・但書を変更すると次回送信時に IS-E00001-1 の形式で「（再）」として再発行されます。<br>'
     +'<b>「申込グループで自動まとめ」とは：</b>1つの申込（同じ申込番号）で複数名参加している場合に、代表者1枚に合算した領収書にまとめる機能です。例）3名で申込 → 代表者宛に3名分合計の1枚を発行し、他2名は0円扱い。個別に分けたい場合は各行の「別会計」にチェックして金額を入れてください。</div>'
-    +'<div style="overflow:auto"><table><thead><tr><th>宛名</th><th>金額</th><th>但し書き</th><th>別会計</th><th>送信先</th><th>状態</th><th></th></tr></thead><tbody>';
+    +'<div style="overflow:auto"><table><thead><tr><th>宛名</th><th>金額</th><th>但し書き</th><th>別会計</th><th>送信先</th><th>申込番号</th><th>状態</th><th></th></tr></thead><tbody>';
   ps.forEach(p=>{h+='<tr><td><input value="'+esc(p.receipt.name||p.company||p.name)+'" style="min-width:150px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'name\',this.value)"></td>'
     +'<td><input type="number" value="'+(p.receipt.amount??p.amount??0)+'" style="width:100px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'amount\',this.value)"></td>'
     +'<td><input value="'+esc(p.receipt.note||'懇親会費として')+'" style="min-width:130px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'note\',this.value)"></td>'
     +'<td style="text-align:center"><input type="checkbox" '+(p.receipt.split?'checked':'')+' onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'split\',this.checked)" title="別会計"></td>'
     +'<td>'+(esc(p.email)||'<span class="tag danger">無</span>')+'</td>'
+    +'<td>'+(p.groupId?esc(p.groupId):'<span class="tag warn" title="申込番号がないと受取人ページで再取得できません">無</span>')+'</td>'
     +'<td>'+(p.receipt.sentAt?'<span class="tag ok">送信済</span>':p.receipt.issued?'<span class="tag warn">発行済</span>':'<span class="tag gray">未</span>')+(receiptDisplayNo(p)?'<div class="hint">'+esc(receiptDisplayNo(p))+(p.receipt.reissue?'（再）':'')+'</div>':'')+(p.receipt.dirty?'<div class="hint" style="color:#9a7400">変更あり→再発行</div>':'')+'</td>'
     +'<td class="flex"><button class="btn sm" onclick="previewReceipt(\''+e.id+'\',\''+p.id+'\')">プレビュー</button><button class="btn sm primary" onclick="sendReceipt(\''+e.id+'\',\''+p.id+'\')">発行・送信</button></td></tr>';});
   return h+'</tbody></table></div></div>';
