@@ -497,10 +497,35 @@ export default {
       if (request.method === 'POST') {
         let body;
         try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
-        const cfg = { token: String(body.token || ''), roomId: String(body.roomId || ''), mention: String(body.mention || ''), template: String(body.template || '') };
+        // token=全体共通。roomId/mention/template=領収書修正通知、closingRoomId/closingMention=締め報告（経理用売上明細）
+        const cfg = {
+          token: String(body.token || ''), roomId: String(body.roomId || ''), mention: String(body.mention || ''), template: String(body.template || ''),
+          closingRoomId: String(body.closingRoomId || ''), closingMention: String(body.closingMention || ''),
+        };
         await env.MAILLOG.put('cfg:chatwork', JSON.stringify(cfg));
         return jres({ ok: true });
       }
+    }
+
+    // --- 締め報告（経理用売上明細）のChatwork通知: 領収書修正通知とは別の通知先に送る ---
+    if (request.method === 'POST' && path === '/notify/closing') {
+      if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);
+      let body;
+      try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
+      if (!body.message) return jres({ ok: false, error: 'message がありません' }, 400);
+      let cfg = null;
+      try { const v = await env.MAILLOG.get('cfg:chatwork'); cfg = v ? JSON.parse(v) : null; } catch (e) {}
+      if (!cfg || !cfg.token) return jres({ ok: false, error: 'Chatwork APIトークンが未設定です（設定→Chatwork通知）' }, 400);
+      if (!cfg.closingRoomId) return jres({ ok: false, error: '締め報告の通知先ルームIDが未設定です（設定→Chatwork通知）' }, 400);
+      const msg = (cfg.closingMention ? cfg.closingMention + '\n' : '') + String(body.message);
+      const res = await fetch('https://api.chatwork.com/v2/rooms/' + encodeURIComponent(cfg.closingRoomId) + '/messages', {
+        method: 'POST',
+        headers: { 'X-ChatWorkToken': cfg.token, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'body=' + encodeURIComponent(msg),
+      });
+      let j = {};
+      try { j = await res.json(); } catch (e) {}
+      return jres({ ok: res.ok, status: res.status, messageId: j.message_id, error: res.ok ? undefined : (j.errors && j.errors.join(', ')) || 'Chatwork送信に失敗しました' }, res.ok ? 200 : 502);
     }
 
     // --- 管理者による領収書再発行のChatwork通知（管理アプリから呼ぶ） ---

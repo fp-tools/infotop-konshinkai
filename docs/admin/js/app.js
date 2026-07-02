@@ -249,13 +249,14 @@ function renderEventDetail(v){
   document.getElementById('pageTitle').textContent=e.name||'(無題)';
   document.getElementById('crumb').textContent=(e.date||'')+'　'+(e.venue||'');
   document.getElementById('topActions').innerHTML='<button class="btn sm" onclick="openEventForm(\''+e.id+'\')">'+ic('settings',14)+' 開催設定</button> <button class="btn sm danger" onclick="delEvent(\''+e.id+'\')">削除</button>';
-  const tabs=[['participants','参加者リスト'],['reception','受付（出欠）'],['mail','メール・メール履歴'],['receipts','領収書発行'],['tasks','タスク（ガント）'],['memo','情報共有メモ']];
+  const tabs=[['participants','参加者リスト'],['reception','受付（出欠）'],['mail','メール・メール履歴'],['receipts','領収書発行'],['costs','原価・経費'],['tasks','タスク（ガント）'],['memo','情報共有メモ']];
   let h='<div class="tabs">'+tabs.map(t=>'<button class="'+(route.tab===t[0]||(route.tab==='maillog'&&t[0]==='mail')?'active':'')+'" onclick="go(\'event\',\''+e.id+'\',\''+t[0]+'\')">'+t[1]+'</button>').join('')+'</div><div id="tabBody"></div>';
   v.innerHTML=h;const b=document.getElementById('tabBody');
   if(route.tab==='participants')b.innerHTML=tabParticipants(e);
   else if(route.tab==='reception')b.innerHTML=tabReception(e);
   else if(route.tab==='mail'||route.tab==='maillog')b.innerHTML=tabMail(e);
   else if(route.tab==='receipts')b.innerHTML=tabReceipts(e);
+  else if(route.tab==='costs')b.innerHTML=tabCosts(e);
   else if(route.tab==='tasks')renderTasks(e,b);
   else if(route.tab==='memo')renderMemo(e,b);
 }
@@ -990,6 +991,85 @@ async function syncMailStatus(eid){
   save();render();
 }
 
+/* ---------- Tab: 原価・経費 ---------- */
+const COST_CATEGORIES=['会場費','飲食費','備品・印刷','人件費','交通費','その他'];
+function costTotal(e){return (e.costs||[]).reduce((s,c)=>s+(Number(c.amount)||0),0);}
+function tabCosts(e){
+  e.costs=e.costs||[];
+  const ps=(e.participants||[]).filter(p=>p.status!=='cancel');
+  const sales=eventRevenue(e),head=eventHeadcount(e);
+  const paid=ps.filter(p=>p.payStatus==='paid'),unpaid=ps.filter(p=>p.payStatus!=='paid');
+  const paidSum=paid.reduce((s,p)=>s+(Number(p.amount)||0),0),unpaidSum=unpaid.reduce((s,p)=>s+(Number(p.amount)||0),0);
+  const cost=costTotal(e),profit=sales-cost,rate=sales?Math.round(profit/sales*1000)/10:0;
+  let h='<div class="row" style="margin-bottom:14px">'
+    +stat('売上（会費合計）',yen(sales),head+'名・キャンセル除く')
+    +stat('支払済',yen(paidSum),paid.length+'名')
+    +stat('未払い',yen(unpaidSum),unpaid.length+'名')
+    +stat('原価・経費 合計',yen(cost),e.costs.length+'件')
+    +stat('粗利',yen(profit),'粗利率 '+rate+'%')+'</div>';
+  // 締めステータス
+  if(e.closing&&e.closing.at){
+    h+='<div class="card pad" style="margin-bottom:16px;background:var(--ok-soft);border-color:#bfe9d3"><b style="color:var(--ok)">'+ic('check',14)+' 締め済み</b> <span class="hint">'+fmtDT(e.closing.at)+' に締め作業を実行し、Chatworkへ報告済み（売上 '+yen(e.closing.sales)+' / 原価 '+yen(e.closing.cost)+' / 粗利 '+yen(e.closing.profit)+'）。数字を修正した場合は「再締め」で再報告できます。</span></div>';
+  }
+  h+='<div class="card pad" style="margin-bottom:16px"><div class="between" style="margin-bottom:10px"><b>'+ic('receipt',16)+' 原価・経費一覧</b><button class="btn sm primary" onclick="addCost(\''+e.id+'\')">'+ic('plus',14)+' 行を追加</button></div>';
+  if(!e.costs.length)h+='<div class="hint" style="padding:8px 0">まだ登録がありません。「行を追加」から会場費・飲食費などを登録してください。</div>';
+  else{
+    h+='<div style="overflow:auto"><table><thead><tr><th>項目</th><th>カテゴリ</th><th style="text-align:right">金額（税込）</th><th>メモ</th><th></th></tr></thead><tbody>';
+    e.costs.forEach(c=>{
+      h+='<tr><td><input value="'+esc(c.name||'')+'" style="min-width:160px" onchange="updCost(\''+e.id+'\',\''+c.id+'\',\'name\',this.value)"></td>'
+      +'<td><select onchange="updCost(\''+e.id+'\',\''+c.id+'\',\'category\',this.value)" style="min-width:110px">'+COST_CATEGORIES.map(k=>'<option'+(c.category===k?' selected':'')+'>'+k+'</option>').join('')+'</select></td>'
+      +'<td><input type="number" value="'+(c.amount??0)+'" style="width:120px;text-align:right" onchange="updCost(\''+e.id+'\',\''+c.id+'\',\'amount\',this.value)"></td>'
+      +'<td><input value="'+esc(c.note||'')+'" style="min-width:160px" onchange="updCost(\''+e.id+'\',\''+c.id+'\',\'note\',this.value)"></td>'
+      +'<td><button class="btn sm danger" onclick="delCost(\''+e.id+'\',\''+c.id+'\')">削除</button></td></tr>';});
+    h+='<tr><td colspan="2" style="font-weight:700;background:var(--warn-soft)">合計</td><td style="text-align:right;font-weight:700;background:var(--warn-soft)">'+yen(cost)+'</td><td colspan="2" style="background:var(--warn-soft)"></td></tr>';
+    h+='</tbody></table></div>';
+  }
+  h+='</div>';
+  h+='<div class="card pad"><div class="between" style="margin-bottom:8px"><b>'+ic('check',16)+' 締め作業（経理報告）</b><button class="btn primary" onclick="previewClosing(\''+e.id+'\')">'+(e.closing&&e.closing.at?'再締め（再報告）':'締め作業を実行')+'</button></div>'
+    +'<div class="hint">売上・原価・粗利をまとめた<b>売上明細（経理用）</b>を、設定した経理向けChatworkグループへ通知します。通知先は「設定 → Chatwork通知 → 締め報告」で登録してください（領収書修正の通知先とは別に設定できます）。</div></div>';
+  return h;
+}
+function addCost(eid){const e=getEvent(eid);e.costs=e.costs||[];e.costs.push({id:uid(),name:'',category:'その他',amount:0,note:''});save();render();}
+function updCost(eid,cid,k,v){const c=(getEvent(eid).costs||[]).find(x=>x.id===cid);if(!c)return;c[k]=k==='amount'?(Number(v)||0):v;save();if(k==='amount')render();}
+function delCost(eid,cid){const e=getEvent(eid);if(!confirm('この行を削除しますか？'))return;e.costs=(e.costs||[]).filter(x=>x.id!==cid);save();render();}
+/* 経理報告用の売上明細メッセージ（Chatwork記法） */
+function buildClosingMessage(e){
+  const ps=(e.participants||[]).filter(p=>p.status!=='cancel');
+  const sales=eventRevenue(e),head=eventHeadcount(e),att=eventAttended(e);
+  const paid=ps.filter(p=>p.payStatus==='paid'),unpaid=ps.filter(p=>p.payStatus!=='paid');
+  const paidSum=paid.reduce((s,p)=>s+(Number(p.amount)||0),0),unpaidSum=unpaid.reduce((s,p)=>s+(Number(p.amount)||0),0);
+  const cost=costTotal(e),profit=sales-cost,rate=sales?Math.round(profit/sales*1000)/10:0;
+  const byCat={};(e.costs||[]).forEach(c=>{byCat[c.category||'その他']=(byCat[c.category||'その他']||0)+(Number(c.amount)||0);});
+  let m='[info][title]【締め報告】'+ (e.name||'') +'（'+(e.date||'')+'）売上明細[/title]';
+  m+='■ 開催情報\nイベント: '+(e.name||'')+'\n開催日: '+(e.date||'')+'\n会場: '+(e.venue||'-')+'\n参加: '+head+'名（受付済 '+att+'名）\n';
+  m+='[hr]■ 売上\n会費売上 合計: '+yen(sales)+'\n　支払済: '+yen(paidSum)+'（'+paid.length+'名）\n　未払い: '+yen(unpaidSum)+'（'+unpaid.length+'名）\n';
+  m+='[hr]■ 原価・経費（合計 '+yen(cost)+'）\n';
+  if((e.costs||[]).length){
+    Object.keys(byCat).forEach(k=>{m+='　'+k+': '+yen(byCat[k])+'\n';});
+    m+='－内訳－\n';
+    (e.costs||[]).forEach(c=>{m+='　・'+(c.name||'(名称未入力)')+'（'+(c.category||'その他')+'）: '+yen(c.amount)+(c.note?'　※'+c.note:'')+'\n';});
+  }else m+='　（登録なし）\n';
+  m+='[hr]■ 損益\n粗利: '+yen(profit)+'（粗利率 '+rate+'%）\n';
+  m+='締め実行: '+new Date().toLocaleString('ja-JP')+'[/info]';
+  return m;
+}
+function previewClosing(eid){
+  const e=getEvent(eid);
+  const msg=buildClosingMessage(e);
+  modal('締め報告のプレビュー','<div class="hint" style="margin-bottom:10px">以下の内容を経理向けChatworkグループへ送信します。よろしければ「送信して締める」を押してください。</div><div class="card pad" style="white-space:pre-wrap;font-size:12px;max-height:380px;overflow:auto;background:#f8fafc">'+esc(msg)+'</div>',
+    [{label:'キャンセル',cls:'btn',on:'closeModal()'},{label:'送信して締める',cls:'btn primary',on:"doClosing('"+eid+"')"}],640);
+}
+async function doClosing(eid){
+  const e=getEvent(eid);
+  const r=await recendSend({message:buildClosingMessage(e)},'/notify/closing');
+  if(r.ok){
+    e.closing={at:new Date().toISOString(),sales:eventRevenue(e),cost:costTotal(e),profit:eventRevenue(e)-costTotal(e)};
+    save();closeModal();render();alert('締め報告をChatworkへ送信しました。');
+  }else{
+    alert('締め報告の送信に失敗しました：'+((r.data&&r.data.error)||r.error||r.status));
+  }
+}
+
 /* ---------- Tab: 情報共有メモ（参加者マスター） ---------- */
 function renderMemo(e,b){
   const ps=(e.participants||[]).filter(p=>p.status!=='cancel');
@@ -1151,11 +1231,17 @@ function viewSettings(){
    +'<label class="fld"><span>事業者登録番号（インボイス）</span><input id="st_regnum" value="'+esc(s.issuerRegNum||RECEIPT_REG_DEFAULT)+'"></label>'
    +'<label class="fld"><span>受取人ページURL（claim.html の公開URL）</span><input id="st_claim" value="'+esc(s.claimUrl||'')+'" placeholder="https://fp-tools.github.io/infotop-konshinkai/claim.html"></label>'
    +'<p class="hint" style="margin:0">設定すると、領収書メールに「再取得・修正ページ」の案内と申込番号が記載されます。受取人はメールアドレス＋申込番号で領収書を再取得でき、発行から2週間以内は宛名・金額・但書を自分で修正できます（修正すると（再）付きで再発行）。</p></div>'
-   +'<div class="card pad"><b>Chatwork通知（領収書の修正時）</b><p class="hint" style="margin:4px 0 14px">受取人または管理者が領収書を修正（再発行）したとき、社内のChatworkグループに通知します。置換タグ：<code>{event}</code>=イベント名 <code>{no}</code>=旧番号 <code>{newNo}</code>=新番号 <code>{editedBy}</code>=修正者（受取人本人／当社） <code>{addressee}</code>=宛名 <code>{email}</code>=受取人メール <code>{changes}</code>=変更内容 <code>{date}</code>=日時</p>'
-   +'<label class="fld"><span>Chatwork APIトークン</span><input id="cw_token" type="password" placeholder="Chatwork「サービス連携」→「APIトークン」で発行"></label>'
-   +'<label class="fld"><span>ルームID（通知先グループチャット）</span><input id="cw_room" placeholder="例）123456789（チャットURLの rid の数字）"></label>'
+   +'<div class="card pad"><b>Chatwork通知（全体設定）</b><p class="hint" style="margin:4px 0 14px">APIトークンは全通知で共通です。通知先（ルームID・メンション）は「領収書修正」と「締め報告」で別々に設定できます。</p>'
+   +'<label class="fld"><span>Chatwork APIトークン（共通）</span><input id="cw_token" type="password" placeholder="Chatwork「サービス連携」→「APIトークン」で発行"></label>'
+   +'<div class="divider"></div>'
+   +'<b style="font-size:13px">① 領収書修正の通知先</b><p class="hint" style="margin:4px 0 10px">受取人または管理者が領収書を修正（再発行）したときに通知。置換タグ：<code>{event}</code> <code>{no}</code> <code>{newNo}</code> <code>{editedBy}</code> <code>{addressee}</code> <code>{email}</code> <code>{changes}</code> <code>{date}</code></p>'
+   +'<label class="fld"><span>ルームID</span><input id="cw_room" placeholder="例）123456789（チャットURLの rid の数字）"></label>'
    +'<label class="fld"><span>メンション（任意・本文の先頭に付加）</span><input id="cw_mention" placeholder="例）[To:1234567]曽我さん または [toall]"></label>'
-   +'<label class="fld"><span>通知文テンプレート（空欄なら既定文）</span><textarea id="cw_tpl" rows="6" placeholder="[info][title]領収書が修正されました[/title]イベント: {event}\n領収書番号: {no} → {newNo}\n修正者: {editedBy}\n宛名: {addressee}\n変更内容:\n{changes}\n日時: {date}[/info]"></textarea></label>'
+   +'<label class="fld"><span>通知文テンプレート（空欄なら既定文）</span><textarea id="cw_tpl" rows="5" placeholder="[info][title]領収書が修正されました[/title]イベント: {event}\n領収書番号: {no} → {newNo}\n修正者: {editedBy}\n宛名: {addressee}\n変更内容:\n{changes}\n日時: {date}[/info]"></textarea></label>'
+   +'<div class="divider"></div>'
+   +'<b style="font-size:13px">② 締め報告（経理用売上明細）の通知先</b><p class="hint" style="margin:4px 0 10px">各イベントの「原価・経費」タブで締め作業を実行したとき、売上・原価・粗利の明細を通知します。①とは別のグループを指定できます。</p>'
+   +'<label class="fld"><span>ルームID（経理向けグループ）</span><input id="cw2_room" placeholder="例）987654321"></label>'
+   +'<label class="fld"><span>メンション（任意）</span><input id="cw2_mention" placeholder="例）[To:7654321]経理ご担当"></label>'
    +'<div class="flex"><button class="btn primary" onclick="saveChatworkCfg()">Chatwork設定を保存</button><span class="hint" id="cw_status">読込中…</span></div></div>'
    +'<div class="card pad"><b>データ管理</b><p class="hint" style="margin:4px 0 12px">データは全端末共通のサーバ（Worker KV）に保存されています。バックアップにご利用ください。</p><div class="flex"><button class="btn" onclick="exportAll()">'+ic('download',14)+' 全データをバックアップ(JSON)</button><label class="btn" style="margin:0">'+ic('upload',14)+' 復元<input type="file" accept=".json" style="display:none" onchange="importAll(this)"></label><button class="btn danger" onclick="wipe()">全データ削除</button></div></div>'
    +'<div style="text-align:right"><button class="btn primary" onclick="saveSettings()">設定を保存</button></div></div>';
@@ -1168,16 +1254,15 @@ async function loadChatworkCfg(){
   if(!el())return;
   if(r.ok&&r.data){
     const c=r.data.config||{};
-    if(document.getElementById('cw_token'))document.getElementById('cw_token').value=c.token||'';
-    if(document.getElementById('cw_room'))document.getElementById('cw_room').value=c.roomId||'';
-    if(document.getElementById('cw_mention'))document.getElementById('cw_mention').value=c.mention||'';
-    if(document.getElementById('cw_tpl'))document.getElementById('cw_tpl').value=c.template||'';
-    el().textContent=c.token&&c.roomId?'設定済み（通知有効）':'未設定（通知は送信されません）';
+    const set=(id,v)=>{const x=document.getElementById(id);if(x)x.value=v||'';};
+    set('cw_token',c.token);set('cw_room',c.roomId);set('cw_mention',c.mention);set('cw_tpl',c.template);
+    set('cw2_room',c.closingRoomId);set('cw2_mention',c.closingMention);
+    el().textContent=(c.token?(c.roomId?'①領収書修正:有効':'①未設定')+' / '+(c.closingRoomId?'②締め報告:有効':'②未設定'):'APIトークン未設定（全通知が無効）');
   }else el().textContent='設定の読込に失敗しました';
 }
 async function saveChatworkCfg(){
-  const r=await recendSend({token:val('cw_token'),roomId:val('cw_room'),mention:val('cw_mention'),template:document.getElementById('cw_tpl').value},'/config/chatwork');
-  if(r.ok){document.getElementById('cw_status').textContent=val('cw_token')&&val('cw_room')?'保存しました（通知有効）':'保存しました（トークン/ルームID未入力のため通知は無効）';}
+  const r=await recendSend({token:val('cw_token'),roomId:val('cw_room'),mention:val('cw_mention'),template:document.getElementById('cw_tpl').value,closingRoomId:val('cw2_room'),closingMention:val('cw2_mention')},'/config/chatwork');
+  if(r.ok){const t=val('cw_token');document.getElementById('cw_status').textContent='保存しました　'+(t?(val('cw_room')?'①領収書修正:有効':'①未設定')+' / '+(val('cw2_room')?'②締め報告:有効':'②未設定'):'（APIトークン未入力のため全通知が無効）');}
   else alert('Chatwork設定の保存に失敗しました：'+(r.error||r.status));
 }
 function exportAll(){downloadFile('懇親会管理_backup_'+todayISO()+'.json',JSON.stringify(store,null,2));}
