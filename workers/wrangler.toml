@@ -1,20 +1,22 @@
-# recend-mailer（メール送信・予約配信・開封計測・QR生成・領収書claim API）のデプロイ設定
+# recend-mailer（メール送信・予約配信・開封計測・QR生成・領収書claim・共有ストア・管理者認証）
 # デプロイ: cd workers && npx wrangler deploy
+# 注意: kv_namespaces 等のトップレベルキーは必ず [vars] や [triggers] などのセクションより前に書くこと
+#       （セクションの後に書くとそのセクション配下の変数と解釈され、KVバインドが消える）
 name = "recend-mailer"
 main = "recend-worker.js"
 compatibility_date = "2026-07-01"
 account_id = "d9efe74340086b0eb0ff36f97773fe07"
 
-# ダッシュボードで設定済みの環境変数を消さない
+# ダッシュボード/CLIで設定済みの変数・シークレットを消さない
 keep_vars = true
-
-[vars]
-# 本番運用: 実際の宛先に送信する（テスト配信に戻す場合は "true" にして再デプロイ）
-TEST_MODE = "false"
 
 kv_namespaces = [
   { binding = "MAILLOG", id = "dfdc1ac55037420ca195fe2dd9953dd3" }
 ]
+
+[vars]
+# 本番運用: 実際の宛先に送信する（テスト配信に戻す場合は "true" にして再デプロイ）
+TEST_MODE = "false"
 
 # 予約配信の実行（5分おき）
 [triggers]

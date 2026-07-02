@@ -43,7 +43,7 @@
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 const JSON_HEADERS = { ...CORS, 'Content-Type': 'application/json' };
@@ -109,9 +109,47 @@ async function qrPng(text, size) {
   return pngGray(dim, px);
 }
 
-function authed(request, env) {
+/* 認証: SHARED_SECRET（レガシー・Worker間用）または /auth で発行したセッショントークン */
+async function checkAuth(request, env) {
   const auth = request.headers.get('Authorization') || '';
-  return env.SHARED_SECRET && auth === `Bearer ${env.SHARED_SECRET}`;
+  if (!auth.startsWith('Bearer ')) return false;
+  const tok = auth.slice(7);
+  if (env.SHARED_SECRET && tok === env.SHARED_SECRET) return true;
+  if (env.MAILLOG && tok.startsWith('sess.')) {
+    const v = await env.MAILLOG.get('sess:' + tok);
+    return !!v;
+  }
+  return false;
+}
+
+/* Chatwork通知（設定は KV cfg:chatwork に保存）。失敗しても本処理は止めない */
+async function notifyChatwork(env, info) {
+  if (!env.MAILLOG) return;
+  let cfg = null;
+  try { const v = await env.MAILLOG.get('cfg:chatwork'); cfg = v ? JSON.parse(v) : null; } catch (e) {}
+  if (!cfg || !cfg.token || !cfg.roomId) return;
+  const tpl = cfg.template ||
+    '[info][title]領収書が修正されました[/title]イベント: {event}\n領収書番号: {no} → {newNo}\n修正者: {editedBy}\n宛名: {addressee}\n変更内容:\n{changes}\n日時: {date}[/info]';
+  const changesText = (info.changes || []).map((c) => {
+    const F = { addressee: '宛名', amount: '金額', note: '但し書き', name: '宛名' };
+    return '・' + (F[c.field] || c.field) + ': ' + c.before + ' → ' + c.after;
+  }).join('\n') || '（記載なし）';
+  const msg = (cfg.mention ? cfg.mention + '\n' : '') + tpl
+    .replace(/{event}/g, info.event || '')
+    .replace(/{no}/g, info.no || '')
+    .replace(/{newNo}/g, info.newNo || '')
+    .replace(/{editedBy}/g, info.editedBy || '')
+    .replace(/{addressee}/g, info.addressee || '')
+    .replace(/{email}/g, info.email || '')
+    .replace(/{changes}/g, changesText)
+    .replace(/{date}/g, new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }));
+  try {
+    await fetch('https://api.chatwork.com/v2/rooms/' + encodeURIComponent(cfg.roomId) + '/messages', {
+      method: 'POST',
+      headers: { 'X-ChatWorkToken': cfg.token, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'body=' + encodeURIComponent(msg),
+    });
+  } catch (e) {}
 }
 
 function footerText(env) {
@@ -162,15 +200,20 @@ function buildEmail(m, env) {
   } else {
     mail.text = text || '';
   }
+  // 添付ファイル（例: 領収書PNG）。[{filename, content(base64)}]
+  if (Array.isArray(m.attachments) && m.attachments.length) mail.attachments = m.attachments;
   return { mail, originalTo: m.to, actualTo: to };
 }
 
-/** 複数通を Resend の batch API（最大100通/リクエスト）で送信する */
+/** 複数通を送信する。添付なしは Resend batch API（最大100通/リクエスト）、
+ *  添付ありは batch 非対応のため1通ずつ /emails で送る（呼び出し側で20件程度にチャンクすること） */
 async function sendMany(messages, env) {
   const built = messages.map((m) => buildEmail(m, env));
   const results = [];
-  for (let i = 0; i < built.length; i += 100) {
-    const chunk = built.slice(i, i + 100);
+  const withAttach = built.filter((b) => b.mail.attachments);
+  const noAttach = built.filter((b) => !b.mail.attachments);
+  for (let i = 0; i < noAttach.length; i += 100) {
+    const chunk = noAttach.slice(i, i + 100);
     const res = await fetch('https://api.resend.com/emails/batch', {
       method: 'POST',
       headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
@@ -180,15 +223,18 @@ async function sendMany(messages, env) {
     try { j = await res.json(); } catch (e) {}
     const ids = (j && j.data) || [];
     chunk.forEach((b, k) => {
-      results.push({
-        ok: res.ok,
-        status: res.status,
-        to: b.actualTo,
-        originalTo: b.originalTo,
-        id: ids[k] && ids[k].id,
-        error: res.ok ? undefined : (j && j.message) || 'send failed',
-      });
+      results.push({ ok: res.ok, status: res.status, to: b.actualTo, originalTo: b.originalTo, id: ids[k] && ids[k].id, error: res.ok ? undefined : (j && j.message) || 'send failed' });
     });
+  }
+  for (const b of withAttach) {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(b.mail),
+    });
+    let j = {};
+    try { j = await res.json(); } catch (e) {}
+    results.push({ ok: res.ok, status: res.status, to: b.actualTo, originalTo: b.originalTo, id: j.id, error: res.ok ? undefined : (j && j.message) || 'send failed' });
   }
   return results;
 }
@@ -199,10 +245,10 @@ async function sendPayload(payload, env) {
     return sendMany(payload.messages || [], env);
   }
   if (payload.type === 'receipt') {
-    return sendMany([{ to: payload.to, subject: '【領収書】' + (payload.event?.name || ''), html: payload.html }], env);
+    return sendMany([{ to: payload.to, subject: '【領収書】' + (payload.event?.name || ''), html: payload.html, attachments: payload.attachments }], env);
   }
   if (payload.type === 'receipt_batch') {
-    return sendMany((payload.items || []).map((it) => ({ to: it.to, subject: '【領収書】' + (payload.event?.name || ''), html: it.html })), env);
+    return sendMany((payload.items || []).map((it) => ({ to: it.to, subject: '【領収書】' + (payload.event?.name || ''), html: it.html, attachments: it.attachments })), env);
   }
   return null;
 }
@@ -344,6 +390,20 @@ export default {
       }
     }
 
+    // --- 管理者ログイン: ID/PW → セッショントークン（12時間有効） ---
+    if (request.method === 'POST' && path === '/auth') {
+      if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);
+      if (!env.ADMIN_USER || !env.ADMIN_PASS) return jres({ ok: false, error: '管理者ID/PWがWorkerに未設定です' }, 500);
+      let body;
+      try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
+      if (String(body.user || '') !== env.ADMIN_USER || String(body.pass || '') !== env.ADMIN_PASS) {
+        return jres({ ok: false, error: 'IDまたはパスワードが違います' }, 401);
+      }
+      const token = 'sess.' + crypto.randomUUID().replace(/-/g, '') + Math.random().toString(36).slice(2, 10);
+      await env.MAILLOG.put('sess:' + token, JSON.stringify({ user: body.user, at: new Date().toISOString() }), { expirationTtl: 60 * 60 * 12 });
+      return jres({ ok: true, token, expiresIn: 60 * 60 * 12 });
+    }
+
     // --- 受取人（claim）API: メールアドレス＋申込番号で照合（Bearer不要・ワンタイムリンク廃止） ---
     if (request.method === 'POST' && (path === '/claim/list' || path === '/claim/edit')) {
       if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);
@@ -392,11 +452,64 @@ export default {
       next.issuedAt = new Date().toISOString();
       next.rootFirstIssuedAt = rec.rootFirstIssuedAt || rec.issuedAt; // 修正しても期限の起点は伸びない
       await storeReceipt(env.MAILLOG, next);
+      // 社内Chatworkへ修正通知（本処理はブロックしない）
+      ctx.waitUntil(notifyChatwork(env, { event: next.eventName, no: rec.no, newNo: next.no, editedBy: '受取人本人', addressee: next.addressee, email: next.email, changes: history.slice(-(history.length - (rec.history || []).length)) }));
       return jres({ ok: true, item: claimView(next, now) });
     }
 
     // --- これ以降は認証必須 ---
-    if (!authed(request, env)) return jres({ ok: false, error: 'unauthorized' }, 401);
+    if (!(await checkAuth(request, env))) return jres({ ok: false, error: 'unauthorized' }, 401);
+
+    // --- 共有データストア（全端末共通・楽観ロック） ---
+    if (path === '/store') {
+      if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);
+      if (request.method === 'GET') {
+        const v = await env.MAILLOG.get('store:main');
+        if (!v) return jres({ ok: true, store: null, rev: 0 });
+        try { const d = JSON.parse(v); return jres({ ok: true, store: d.store, rev: d.rev || 0, updatedAt: d.updatedAt }); } catch (e) { return jres({ ok: true, store: null, rev: 0 }); }
+      }
+      if (request.method === 'PUT') {
+        let body;
+        try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
+        if (!body.store || typeof body.store !== 'object') return jres({ ok: false, error: 'store がありません' }, 400);
+        const v = await env.MAILLOG.get('store:main');
+        let cur = { rev: 0 };
+        try { if (v) cur = JSON.parse(v); } catch (e) {}
+        const baseRev = Number(body.baseRev) || 0;
+        if (cur.rev && baseRev !== cur.rev) {
+          // 他端末が先に保存している → 衝突。クライアントは最新を取り直す
+          return jres({ ok: false, conflict: true, rev: cur.rev, store: cur.store, updatedAt: cur.updatedAt }, 409);
+        }
+        const rec = { store: body.store, rev: (cur.rev || 0) + 1, updatedAt: new Date().toISOString() };
+        await env.MAILLOG.put('store:main', JSON.stringify(rec));
+        return jres({ ok: true, rev: rec.rev });
+      }
+    }
+
+    // --- Chatwork通知設定 ---
+    if (path === '/config/chatwork') {
+      if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);
+      if (request.method === 'GET') {
+        const v = await env.MAILLOG.get('cfg:chatwork');
+        let cfg = null; try { cfg = v ? JSON.parse(v) : null; } catch (e) {}
+        return jres({ ok: true, config: cfg });
+      }
+      if (request.method === 'POST') {
+        let body;
+        try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
+        const cfg = { token: String(body.token || ''), roomId: String(body.roomId || ''), mention: String(body.mention || ''), template: String(body.template || '') };
+        await env.MAILLOG.put('cfg:chatwork', JSON.stringify(cfg));
+        return jres({ ok: true });
+      }
+    }
+
+    // --- 管理者による領収書再発行のChatwork通知（管理アプリから呼ぶ） ---
+    if (request.method === 'POST' && path === '/notify/receipt-edit') {
+      let body;
+      try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
+      ctx.waitUntil(notifyChatwork(env, { ...body, editedBy: body.editedBy || '当社（管理者）' }));
+      return jres({ ok: true });
+    }
 
     // --- 領収書レコードの保存（管理アプリが発行・送信時に呼ぶ） ---
     if (request.method === 'POST' && path === '/receipts') {

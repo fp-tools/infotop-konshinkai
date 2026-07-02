@@ -1,0 +1,11 @@
+# infotop-payment-webhook（決済Webhook受け皿）のデプロイ設定
+# デプロイ: cd workers && npx wrangler deploy --config wrangler-payment-webhook.toml
+name = "infotop-payment-webhook"
+main = "payment-webhook-worker.js"
+compatibility_date = "2026-07-01"
+account_id = "d9efe74340086b0eb0ff36f97773fe07"
+keep_vars = true
+
+kv_namespaces = [
+  { binding = "PAYMENTS", id = "03e6a0fa9bc54fb295573a7066546031" }
+]

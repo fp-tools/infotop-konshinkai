@@ -8,17 +8,33 @@
 
 ```
 infotop-konshinkai/
-├── docs/                        ← GitHub Pages 公開フォルダ（フロントエンド）
-│   ├── index.html               ← アプリ本体（マークアップ）
-│   ├── css/style.css            ← スタイル
-│   └── js/app.js                ← アプリロジック（データはブラウザのlocalStorageに保存）
+├── docs/                        ← GitHub Pages 公開フォルダ
+│   ├── index.html               ← ルート（受取人ページへリダイレクト）
+│   ├── admin/                   ← 管理画面（社内用・ID/PWログイン必須）
+│   │   ├── index.html / css/ / js/app.js
+│   ├── claim/                   ← 受取人ページ（領収書の取得・修正）
+│   │   └── index.html
 ├── workers/                     ← バックエンド（Cloudflare Workers）
 │   ├── payment-webhook-worker.js ← インフォトップ「購入者情報送信API」Webhook受け皿（KV保存）
-│   └── recend-worker.js          ← Resend API 経由のメール送信（リマインド・領収書）
+│   ├── recend-worker.js          ← メール送信・予約配信・開封計測・QR・領収書claim・共有ストア・認証
+│   ├── wrangler.toml             ← recend-mailer のデプロイ設定
+│   └── wrangler-payment-webhook.toml ← webhook のデプロイ設定
 ├── samples/
 │   └── 参加者リスト_サンプル.csv  ← CSVインポート用の匿名サンプル（実データは置かない）
 └── README.md
 ```
+
+## URL
+
+- 管理画面（要ログイン）: `https://<アカウント>.github.io/<リポジトリ>/admin/`
+- 受取人ページ: `https://<アカウント>.github.io/<リポジトリ>/claim/`
+
+## データの保存場所（v3から変更）
+
+管理画面のデータは **Worker(KV) の共有ストア**に保存され、**全端末で共通**。
+ログイン（ID/PW → 12時間セッション）した端末なら、どこからでも同じデータが見える。
+保存は楽観ロック（他端末が先に保存していたら最新を取り込んで通知）。localStorageはオフラインキャッシュとして併用。
+管理者ID/PWは Worker の Secret（`ADMIN_USER` / `ADMIN_PASS`）。変更は `wrangler secret put` で可能。
 
 ## 主な機能
 

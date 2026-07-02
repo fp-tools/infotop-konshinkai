@@ -13,3 +13,6 @@ Thumbs.db
 
 # アーカイブ類はコミットしない（別エージェント成果物の受け渡し用）
 *.zip
+
+# wranglerローカルキャッシュ
+workers/.wrangler/
