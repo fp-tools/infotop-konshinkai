@@ -11,7 +11,11 @@
  *   DELETE /schedule?id=xxx  予約の取消（pending のみ）
  *   GET    /opens            開封記録の一覧 { opens: { mid: {count,first,last} } }
  *   GET    /open?mid=xxx     開封トラッキング用 1x1 GIF（メール本文に埋め込まれる・認証なし）
- *   ※ /open 以外はすべて Authorization: Bearer SHARED_SECRET が必要
+ *   GET    /qr?data=&size=   QRコードPNG生成（認証なし）
+ *   POST   /receipts         領収書レコードのKV保存（管理アプリが発行時に呼ぶ・要Bearer）
+ *   POST   /claim/list       受取人: メール＋申込番号で自分の領収書一覧を取得（認証=その2項目）
+ *   POST   /claim/edit       受取人: 宛名/金額/但書の修正→再発行（初回発行から14日以内のみ）
+ *   ※ /open /qr /claim/* 以外はすべて Authorization: Bearer SHARED_SECRET が必要
  *
  * ■ デプロイ手順（Cloudflare ダッシュボード）
  * 1) Workers & Pages → Create Worker → このファイルを貼り付けて Deploy
@@ -218,6 +222,91 @@ async function kvListAll(kv, prefix) {
   return out;
 }
 
+/* ==================== 領収書ストア＋受取人（claim）API ====================
+ * 認証方式: 受取人は「メールアドレス＋申込番号」の組で照合（ワンタイムリンクは廃止）。
+ *   申込番号はjcityフォームが自動採番し、領収書メール本文に明記される。
+ * 保存: KVキー rcpt:<領収書番号> に券面データを永続保存（TTLなし）。
+ *   系譜の現在版ポインタは rcur:<元番号>。修正時は新番号(R-xxxxx-1…)で再発行し履歴を残す。
+ * 本人修正は初回発行から14日以内のみ（管理者は管理アプリからいつでも修正可）。
+ */
+const CLAIM_EDIT_DAYS = 14;
+const normMail = (s) => String(s || '').trim().toLowerCase();
+const normNo = (s) => String(s || '').trim();
+
+const RCPT_CORP_KW = ['株式会社', '合同会社', '有限会社', '合資会社', '合名会社', '一般社団法人', '公益社団法人', '一般財団法人', '公益財団法人', 'NPO法人', 'npo法人', '医療法人', '学校法人', '社会福祉法人', '協同組合', '事業協同組合', '協会', '財団', '機構', '組合'];
+/** 券面HTML（管理アプリ docs/js/app.js の receiptHTML と同一デザイン）を保存レコードから描画する */
+function renderReceipt(r) {
+  const hon = RCPT_CORP_KW.some((kw) => String(r.addressee || '').includes(kw)) ? '御中' : '様';
+  const amount = Number(r.amount) || 0;
+  const hasAmount = amount > 0;
+  const tax = Math.floor((amount * 10) / 110);
+  const pretax = amount - tax;
+  const needsStamp = amount >= 50000;
+  const fmt = (n) => n.toLocaleString('ja-JP');
+  const fmtJP = (d) => { if (!d) return '　　年　月　日'; const m = String(d).slice(0, 10).split('-'); return m[0] + '年' + Number(m[1]) + '月' + Number(m[2]) + '日'; };
+  const issuer = r.issuer || {};
+  const dispNo = r.no || '';
+  return '<div style="width:560px;max-width:100%;margin:auto;background:#fff;color:#0f172a;font-family:\'Noto Sans JP\',\'Hiragino Sans\',\'Yu Gothic\',Meiryo,sans-serif;padding:40px 44px;border:1px solid #e2e8f0">'
+    + '<div style="text-align:right;font-size:11px;color:#64748b;margin-bottom:8px">領収書番号：' + escHtml(dispNo) + '</div>'
+    + '<div style="text-align:center;border-bottom:3px double #0f172a;padding-bottom:10px;margin-bottom:28px"><span style="font-size:22px;font-weight:900;letter-spacing:.25em">領　収　書</span>' + (r.isReissue ? '<span style="font-size:12px;font-weight:700;color:#b91c1c;margin-left:8px">（再）</span>' : '') + '</div>'
+    + '<table width="100%" cellpadding="0" cellspacing="0" style="border-bottom:1.5px solid #0f172a;margin-bottom:22px"><tr><td style="font-size:16px;font-weight:700;padding-bottom:5px">' + (escHtml(r.addressee) || '　　　　　　　　　　　') + '</td><td style="font-size:12px;white-space:nowrap;text-align:right;vertical-align:bottom;padding-bottom:5px">　' + hon + '</td></tr></table>'
+    + '<table width="100%" cellpadding="0" cellspacing="0" style="border:2px solid #0f172a;background:#f8fafc;margin-bottom:14px"><tr>'
+    + '<td style="font-size:12px;font-weight:700;color:#374151;white-space:nowrap;padding:13px 0 13px 14px">金　額</td>'
+    + '<td style="font-size:23px;font-weight:900;letter-spacing:.04em;padding:13px 10px">¥ ' + (hasAmount ? fmt(amount) : '―') + '</td>'
+    + (hasAmount ? '<td style="font-size:10px;color:#64748b;white-space:nowrap;vertical-align:middle">（税込）</td>' : '')
+    + (needsStamp ? '<td style="padding:8px 12px 8px 0;text-align:right;vertical-align:middle"><div style="display:inline-block;width:44px;height:44px;border:1px solid #94a3b8;font-size:9px;line-height:1.5;color:#9ca3af;text-align:center;padding-top:6px;box-sizing:border-box">収入<br>印紙</div></td>' : '')
+    + '</tr></table>'
+    + (hasAmount ? '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:20px;font-size:11px">'
+      + '<tr style="border-bottom:1px solid #e2e8f0"><td style="color:#64748b;padding:7px 5px 7px 10px">課税対象額（税抜）</td><td style="text-align:right;padding:7px 5px;font-weight:600;color:#374151">¥ ' + fmt(pretax) + '</td></tr>'
+      + '<tr style="border-bottom:1px solid #e2e8f0"><td style="color:#64748b;padding:7px 5px 7px 10px">消費税額（10%）</td><td style="text-align:right;padding:7px 5px;font-weight:600;color:#374151">¥ ' + fmt(tax) + '</td></tr>'
+      + '</table>' : '')
+    + '<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:14px"><tr>'
+    + '<td style="font-size:12px;white-space:nowrap;color:#374151;padding-bottom:6px;vertical-align:bottom">但　し　</td>'
+    + '<td style="font-size:12.5px;font-weight:500;border-bottom:1px solid #94a3b8;padding-bottom:3px">' + (escHtml(r.note) || '　　　　　　　　　　　　　　　') + '</td>'
+    + '</tr></table>'
+    + '<div style="font-size:11px;color:#374151;margin-bottom:26px">上記正に領収いたしました。（対象：' + escHtml(r.eventName || '') + (r.payMethod ? '／' + escHtml(r.payMethod) + '決済' : '') + '）</div>'
+    + '<table width="100%" cellpadding="0" cellspacing="0" style="border-top:2px solid #0f172a"><tr><td style="padding-top:12px">'
+    + '<div style="text-align:right;font-size:12px;color:#374151;margin-bottom:10px">' + fmtJP(r.paymentDate) + '</div>'
+    + (issuer.addr ? '<div style="text-align:right;font-size:11px;color:#64748b;line-height:1.6">' + escHtml(issuer.addr) + '</div>' : '')
+    + '<div style="text-align:right;font-size:15px;font-weight:800;padding-bottom:4px;margin-top:4px"><span style="border-bottom:1.5px solid #0f172a;padding-bottom:3px">' + escHtml(issuer.name || '') + '</span></div>'
+    + (issuer.phone ? '<div style="text-align:right;font-size:11px;color:#64748b;margin-top:5px">TEL ' + escHtml(issuer.phone) + '</div>' : '')
+    + '<div style="text-align:right;font-size:11px;color:#64748b;margin-top:3px">登録番号：' + escHtml(issuer.reg || '') + '</div>'
+    + '</td></tr></table>'
+    + '</div>';
+}
+
+/** 領収書レコードを保存し、系譜の現在版ポインタを付け替える（旧版は履歴として残る） */
+async function storeReceipt(kv, rec) {
+  const rootNo = rec.rootNo || rec.no;
+  const prevNo = await kv.get('rcur:' + rootNo);
+  if (prevNo && prevNo !== rec.no) {
+    const pv = await kv.get('rcpt:' + prevNo);
+    if (pv) {
+      try { const prev = JSON.parse(pv); prev.isCurrent = false; await kv.put('rcpt:' + prevNo, JSON.stringify(prev)); } catch (e) {}
+    }
+  }
+  rec.isCurrent = true;
+  await kv.put('rcpt:' + rec.no, JSON.stringify(rec));
+  await kv.put('rcur:' + rootNo, rec.no);
+}
+
+function claimMatch(rec, email, orderNo) {
+  return rec && rec.isCurrent && normMail(rec.email) === email && normNo(rec.orderNo) === orderNo && orderNo !== '';
+}
+function claimEditable(rec, now) {
+  const base = Date.parse(rec.rootFirstIssuedAt || rec.issuedAt || 0);
+  return isFinite(base) && (now - base) <= CLAIM_EDIT_DAYS * 24 * 60 * 60 * 1000;
+}
+function claimView(rec, now) {
+  return {
+    no: rec.no, eventName: rec.eventName || '', addressee: rec.addressee || '', amount: Number(rec.amount) || 0,
+    note: rec.note || '', paymentDate: rec.paymentDate || '', issuedAt: rec.issuedAt || '', isReissue: !!rec.isReissue,
+    canEdit: claimEditable(rec, now),
+    editDeadline: new Date(Date.parse(rec.rootFirstIssuedAt || rec.issuedAt || 0) + CLAIM_EDIT_DAYS * 24 * 60 * 60 * 1000).toISOString(),
+    html: renderReceipt(rec),
+  };
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
@@ -255,8 +344,77 @@ export default {
       }
     }
 
+    // --- 受取人（claim）API: メールアドレス＋申込番号で照合（Bearer不要・ワンタイムリンク廃止） ---
+    if (request.method === 'POST' && (path === '/claim/list' || path === '/claim/edit')) {
+      if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);
+      let body;
+      try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
+      const email = normMail(body.email);
+      const orderNo = normNo(body.orderNo);
+      if (!email || !orderNo) return jres({ ok: false, error: 'メールアドレスと申込番号を入力してください' }, 400);
+      const now = Date.now();
+
+      if (path === '/claim/list') {
+        const rows = await kvListAll(env.MAILLOG, 'rcpt:');
+        const items = rows.map((r) => r.value).filter((rec) => claimMatch(rec, email, orderNo))
+          .sort((a, b) => String(b.issuedAt || '').localeCompare(String(a.issuedAt || '')))
+          .map((rec) => claimView(rec, now));
+        return jres({ ok: true, items });
+      }
+
+      // /claim/edit: 本人修正 → 新番号（R-xxxxx-1…）で再発行（初回発行から14日以内のみ）
+      const no = normNo(body.no);
+      const v = no ? await env.MAILLOG.get('rcpt:' + no) : null;
+      let rec = null;
+      try { rec = v ? JSON.parse(v) : null; } catch (e) {}
+      if (!claimMatch(rec, email, orderNo)) return jres({ ok: false, error: '対象の領収書が見つかりません' }, 404);
+      if (!claimEditable(rec, now)) return jres({ ok: false, error: '修正期限（発行から' + CLAIM_EDIT_DAYS + '日以内）を過ぎています。お手数ですが事務局までご連絡ください。' }, 403);
+      const ch = body.changes || {};
+      const FIELDS = { addressee: 'addressee', amount: 'amount', note: 'note' };
+      const history = Array.isArray(rec.history) ? rec.history.slice() : [];
+      const next = { ...rec, history };
+      let changed = false;
+      for (const f of Object.keys(FIELDS)) {
+        if (ch[f] === undefined) continue;
+        let nv = f === 'amount' ? Number(ch[f]) : String(ch[f]).slice(0, 200);
+        if (f === 'amount' && (!isFinite(nv) || nv <= 0)) return jres({ ok: false, error: '金額が不正です' }, 400);
+        if (nv === rec[f]) continue;
+        history.push({ at: new Date().toISOString(), by: 'user', field: f, before: rec[f], after: nv });
+        next[f] = nv;
+        changed = true;
+      }
+      if (!changed) return jres({ ok: false, error: '変更がありません' }, 400);
+      next.rootNo = rec.rootNo || rec.no;
+      next.revision = (rec.revision || 0) + 1;
+      next.no = next.rootNo + '-' + next.revision;
+      next.isReissue = true;
+      next.editedBy = 'user';
+      next.issuedAt = new Date().toISOString();
+      next.rootFirstIssuedAt = rec.rootFirstIssuedAt || rec.issuedAt; // 修正しても期限の起点は伸びない
+      await storeReceipt(env.MAILLOG, next);
+      return jres({ ok: true, item: claimView(next, now) });
+    }
+
     // --- これ以降は認証必須 ---
     if (!authed(request, env)) return jres({ ok: false, error: 'unauthorized' }, 401);
+
+    // --- 領収書レコードの保存（管理アプリが発行・送信時に呼ぶ） ---
+    if (request.method === 'POST' && path === '/receipts') {
+      if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);
+      let body;
+      try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
+      const items = Array.isArray(body.items) ? body.items : [];
+      let saved = 0;
+      for (const rec of items) {
+        if (!rec || !rec.no) continue;
+        rec.rootNo = rec.rootNo || rec.no;
+        rec.rootFirstIssuedAt = rec.rootFirstIssuedAt || rec.issuedAt || new Date().toISOString();
+        rec.editedBy = rec.editedBy || 'admin';
+        await storeReceipt(env.MAILLOG, rec);
+        saved++;
+      }
+      return jres({ ok: true, saved });
+    }
 
     // --- 開封記録一覧 ---
     if (request.method === 'GET' && path === '/opens') {

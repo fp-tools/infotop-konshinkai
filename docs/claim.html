@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>領収書の取得・修正 | インフォトップ懇親会</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>
+:root{--bg:#f4f6fa;--panel:#fff;--ink:#1f2733;--sub:#6b7686;--line:#e4e8ef;--brand:#2f6df6;--brand-d:#1f53c9;--ok:#1aa86b;--warn:#9a7400;--danger:#e0483c;}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,system-ui,sans-serif;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.7}
+.wrap{max-width:680px;margin:0 auto;padding:28px 16px 60px}
+h1{font-size:19px;margin:0 0 4px}
+.sub{color:var(--sub);font-size:12.5px;margin-bottom:22px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 3px rgba(20,30,50,.08);padding:20px;margin-bottom:16px}
+label{display:block;margin-bottom:14px}
+label span{display:block;font-size:12.5px;color:var(--sub);font-weight:600;margin-bottom:5px}
+input{font-family:inherit;font-size:14px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;width:100%}
+input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px #eaf1ff}
+button{font-family:inherit;cursor:pointer;border:1px solid var(--line);background:#fff;color:var(--ink);padding:9px 16px;border-radius:9px;font-size:13px;font-weight:600}
+button.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+button.primary:hover{background:var(--brand-d)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.hint{font-size:12px;color:var(--sub)}
+.err{background:#fdeceb;color:var(--danger);border:1px solid #f3c6c2;border-radius:9px;padding:10px 14px;font-size:13px;margin-bottom:14px}
+.ok-banner{background:#e6f7ef;color:#0d7a4b;border:1px solid #bfe9d3;border-radius:9px;padding:10px 14px;font-size:13px;margin-bottom:14px}
+.tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
+.tag.ok{background:#e6f7ef;color:var(--ok)}
+.tag.warn{background:#fdf4dd;color:var(--warn)}
+.tag.re{background:#fdeceb;color:var(--danger)}
+.meta{font-size:12.5px;color:var(--sub);margin:6px 0 12px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.receipt-holder{overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fafbfd}
+.editform{background:#f8fafc;border:1px solid var(--line);border-radius:9px;padding:14px;margin-top:12px}
+@media print{body *{visibility:hidden}.print-target,.print-target *{visibility:visible}.print-target{position:absolute;top:0;left:0;width:100%}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>領収書の取得・修正</h1>
+  <div class="sub">インフォトップ懇親会 領収書ページ　※領収書メールに記載の情報でログインできます</div>
+
+  <div class="card" id="loginCard">
+    <div id="loginErr"></div>
+    <label><span>メールアドレス（お申込時にご登録のもの）</span><input id="inEmail" type="email" placeholder="mail@example.com" autocomplete="email"></label>
+    <label><span>お申込番号（領収書メールに記載）</span><input id="inOrder" placeholder="例）55981" inputmode="numeric"></label>
+    <button class="primary" id="btnLogin" onclick="doList()">領収書を表示する</button>
+    <div class="hint" style="margin-top:10px">メールアドレスとお申込番号の組み合わせが一致した場合のみ表示されます。お申込番号がご不明な場合は事務局までお問い合わせください。</div>
+  </div>
+
+  <div id="list"></div>
+</div>
+
+<script>
+// 管理者設定: recend Worker のURL（デプロイ後に書き換える。?api= での上書きも可能）
+const DEFAULT_API_URL = '';
+const API_URL = (new URLSearchParams(location.search).get('api') || DEFAULT_API_URL).replace(/\/+$/, '');
+
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const yen = n => '¥' + (Number(n) || 0).toLocaleString('ja-JP');
+const fmtD = iso => { if (!iso) return '-'; const d = new Date(iso); return isNaN(d) ? '-' : d.toLocaleDateString('ja-JP'); };
+let _items = [], _cred = null;
+
+async function api(path, body) {
+  if (!API_URL) throw new Error('このページはまだ設定が完了していません（API URL未設定）。事務局までご連絡ください。');
+  const res = await fetch(API_URL + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let j = null; try { j = await res.json(); } catch (e) {}
+  if (!res.ok || !j || j.ok === false) throw new Error((j && j.error) || ('通信エラー（' + res.status + '）'));
+  return j;
+}
+
+async function doList() {
+  const email = document.getElementById('inEmail').value.trim();
+  const orderNo = document.getElementById('inOrder').value.trim();
+  const errEl = document.getElementById('loginErr'); errEl.innerHTML = '';
+  if (!email || !orderNo) { errEl.innerHTML = '<div class="err">メールアドレスとお申込番号を入力してください。</div>'; return; }
+  const btn = document.getElementById('btnLogin'); btn.disabled = true; btn.textContent = '確認中…';
+  try {
+    const j = await api('/claim/list', { email, orderNo });
+    _cred = { email, orderNo }; _items = j.items || [];
+    if (!_items.length) { errEl.innerHTML = '<div class="err">該当する領収書が見つかりませんでした。メールアドレスとお申込番号をご確認ください。</div>'; }
+    renderList();
+  } catch (e) { errEl.innerHTML = '<div class="err">' + esc(e.message) + '</div>'; }
+  btn.disabled = false; btn.textContent = '領収書を表示する';
+}
+
+function renderList(notice) {
+  const el = document.getElementById('list');
+  if (!_items.length) { el.innerHTML = ''; return; }
+  let h = notice ? '<div class="ok-banner">' + esc(notice) + '</div>' : '';
+  _items.forEach((it, i) => {
+    h += '<div class="card">'
+      + '<div><b>' + esc(it.eventName) + '</b>　<span class="tag ok">' + esc(it.no) + '</span>' + (it.isReissue ? ' <span class="tag re">（再）再発行</span>' : '') + '</div>'
+      + '<div class="meta">宛名: ' + esc(it.addressee) + '　金額: ' + yen(it.amount) + '（税込）　但し: ' + esc(it.note) + '　発行日: ' + fmtD(it.issuedAt) + '</div>'
+      + '<div class="receipt-holder" id="rh_' + i + '">' + it.html + '</div>'
+      + '<div class="btns">'
+      + '<button class="primary" onclick="downloadPng(' + i + ')">PNGで保存</button>'
+      + '<button onclick="printOne(' + i + ')">印刷</button>'
+      + (it.canEdit ? '<button onclick="toggleEdit(' + i + ')">宛名・金額・但し書きを修正</button>' : '<span class="hint" style="align-self:center">修正期限（発行から2週間）を過ぎています。修正は事務局までご連絡ください。</span>')
+      + '</div>'
+      + (it.canEdit ? '<div class="editform" id="ef_' + i + '" style="display:none">'
+        + '<div class="hint" style="margin-bottom:10px">修正すると新しい番号（' + esc(it.no.match(/^R-\d+/) ? it.no.match(/^R-\d+/)[0] : it.no) + '-n）で「（再）」付きの領収書が再発行されます。修正期限: ' + fmtD(it.editDeadline) + ' まで</div>'
+        + '<label><span>宛名</span><input id="ed_name_' + i + '" value="' + esc(it.addressee) + '"></label>'
+        + '<label><span>金額（税込・円）</span><input id="ed_amount_' + i + '" type="number" value="' + (Number(it.amount) || 0) + '"></label>'
+        + '<label><span>但し書き</span><input id="ed_note_' + i + '" value="' + esc(it.note) + '"></label>'
+        + '<button class="primary" id="ed_btn_' + i + '" onclick="doEdit(' + i + ')">この内容で再発行する</button>'
+        + '</div>' : '')
+      + '</div>';
+  });
+  el.innerHTML = h;
+}
+
+function toggleEdit(i) { const f = document.getElementById('ef_' + i); if (f) f.style.display = f.style.display === 'none' ? 'block' : 'none'; }
+
+async function doEdit(i) {
+  const it = _items[i];
+  const changes = {
+    addressee: document.getElementById('ed_name_' + i).value.trim(),
+    amount: Number(document.getElementById('ed_amount_' + i).value),
+    note: document.getElementById('ed_note_' + i).value.trim(),
+  };
+  if (!changes.addressee) { alert('宛名を入力してください。'); return; }
+  if (!isFinite(changes.amount) || changes.amount <= 0) { alert('金額が不正です。'); return; }
+  if (!confirm('この内容で再発行します。よろしいですか？\n（元の領収書は無効となり、新しい番号で発行されます）')) return;
+  const btn = document.getElementById('ed_btn_' + i); btn.disabled = true; btn.textContent = '再発行中…';
+  try {
+    const j = await api('/claim/edit', { email: _cred.email, orderNo: _cred.orderNo, no: it.no, changes });
+    _items[i] = j.item;
+    renderList('再発行しました（新しい番号: ' + j.item.no + '）。以下からPNG保存・印刷できます。');
+    window.scrollTo(0, 0);
+  } catch (e) { alert('修正に失敗しました：' + e.message); btn.disabled = false; btn.textContent = 'この内容で再発行する'; }
+}
+
+async function downloadPng(i) {
+  const holder = document.getElementById('rh_' + i);
+  const node = holder.firstElementChild || holder;
+  try {
+    const canvas = await html2canvas(node, { scale: 2, backgroundColor: '#ffffff' });
+    const a = document.createElement('a');
+    a.download = _items[i].no + '.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+  } catch (e) { alert('PNGの生成に失敗しました。印刷機能をご利用ください。'); }
+}
+
+function printOne(i) {
+  document.querySelectorAll('.print-target').forEach(n => n.classList.remove('print-target'));
+  document.getElementById('rh_' + i).classList.add('print-target');
+  window.print();
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Enter' && document.activeElement && /in(Email|Order)/.test(document.activeElement.id)) doList(); });
+</script>
+</body>
+</html>

@@ -42,7 +42,7 @@ const AR_SUBJ_DEFAULT='【受付QRコード】{{event}} お申込みありがと
 const AR_BODY_DEFAULT='{{name}} 様\n\nこの度は「{{event}}」にお申込みいただき、誠にありがとうございます。\n当日は受付にて、下記のQRコードをご提示ください。\n\n{{qr}}\n\n▼開催日：{{date}}\n▼会場　：{{venue}}\n▼参加費：{{amount}}\n\n当日お会いできることを楽しみにしております。';
 const RECEIPT_REG_DEFAULT='T6010001102185'; // 当社の事業者登録番号（全領収書に固定記載）
 const defaultStore=()=>({events:[],people:[],venues:[],receiptSeq:0,
-  settings:{recendUrl:'',recendToken:'',companyName:'株式会社インフォトップ',receiptIssuer:'株式会社インフォトップ',companyAddr:'',issuerPhone:'',issuerRegNum:RECEIPT_REG_DEFAULT,formApiUrl:'',formApiToken:'',payReceiveUrl:'',payReceiveToken:'',payPageUrl:'',payItemId:'',autoReplyOn:false,autoReplySubj:AR_SUBJ_DEFAULT,autoReplyBody:AR_BODY_DEFAULT}});
+  settings:{recendUrl:'',recendToken:'',companyName:'株式会社インフォトップ',receiptIssuer:'株式会社インフォトップ',companyAddr:'',issuerPhone:'',issuerRegNum:RECEIPT_REG_DEFAULT,claimUrl:'',formApiUrl:'',formApiToken:'',payReceiveUrl:'',payReceiveToken:'',payPageUrl:'',payItemId:'',autoReplyOn:false,autoReplySubj:AR_SUBJ_DEFAULT,autoReplyBody:AR_BODY_DEFAULT}});
 let store=load();
 function load(){try{const r=JSON.parse(localStorage.getItem(LS_KEY));if(r&&r.events){r.people=r.people||[];r.venues=r.venues||[];r.receiptSeq=r.receiptSeq||0;r.settings=Object.assign(defaultStore().settings,r.settings||{});return r;}}catch(e){}return defaultStore();}
 function save(){localStorage.setItem(LS_KEY,JSON.stringify(store));renderStoreInfo();}
@@ -570,10 +570,43 @@ function taxBreakdown(amountWithTax,rate=10){const a=Number(amountWithTax);if(!i
 function nextReceiptNo(){store.receiptSeq=(store.receiptSeq||0)+1;return 'R-'+String(store.receiptSeq).padStart(5,'0');}
 /* 発行時に呼ぶ: 未採番なら連番を採番。発行後に編集(dirty)されていれば版数を+1して再発行扱いにする */
 function issueReceiptNo(p){const r=p.receipt;
-  if(!r.no){r.no=nextReceiptNo();r.revision=0;r.reissue=false;}
+  if(!r.no){r.no=nextReceiptNo();r.revision=0;r.reissue=false;r.firstIssuedAt=new Date().toISOString();}
   else if(r.dirty){r.revision=(r.revision||0)+1;r.reissue=true;r.dirty=false;}
   save();return receiptDisplayNo(p);}
 function receiptDisplayNo(p){const r=p.receipt;return r.no?(r.no+(r.revision?'-'+r.revision:'')):'';}
+/* 受取人ページ（claim）用の券面レコード。Worker(KV)に永続保存され、メール＋申込番号で本人が再取得・修正できる */
+function receiptRecord(e,p){const s=store.settings;
+  return {no:receiptDisplayNo(p),rootNo:p.receipt.no,revision:p.receipt.revision||0,isReissue:!!p.receipt.reissue,
+    email:p.email||'',orderNo:p.groupId||'',addressee:p.receipt.name||p.company||p.name||'',
+    amount:Number(p.receipt.amount??p.amount)||0,note:p.receipt.note||'懇親会費として',
+    eventName:e.name||'',payMethod:p.payMethod||'',paymentDate:(p.paidAt||'').slice(0,10)||e.date||'',
+    issuedAt:new Date().toISOString(),rootFirstIssuedAt:p.receipt.firstIssuedAt||new Date().toISOString(),
+    editedBy:'admin',history:p.receipt.history||[],
+    issuer:{name:s.receiptIssuer||s.companyName||'',addr:s.companyAddr||'',phone:s.issuerPhone||'',reg:s.issuerRegNum||RECEIPT_REG_DEFAULT}};}
+/* 発行済み領収書をWorkerに保存（受取人ページで取得可能にする）。失敗してもメール送信自体は成立している */
+async function pushReceiptRecords(e,ps){
+  if(!workerBase())return;
+  const items=ps.map(p=>receiptRecord(e,p));
+  const r=await recendSend({items},'/receipts');
+  if(!r.ok)alert('注意: 領収書データの保存（受取人ページ用）に失敗しました。メール自体は送信済みです。\n'+(r.error||r.status||'')+(r.data&&r.data.error?'\n'+r.data.error:''));
+}
+/* 領収書メールの本文ラッパー: 申込番号を必ず明記し、受取人ページの案内を付ける */
+function receiptMailHTML(e,p,inner){
+  const s=store.settings;const orderNo=p.groupId||'';
+  let head='<div style="font-family:\'Hiragino Kaku Gothic ProN\',\'Yu Gothic\',Meiryo,sans-serif;font-size:13px;line-height:1.9;color:#1f2733;margin-bottom:18px">'
+    +esc(p.name||'ご参加者')+' 様<br><br>「'+esc(e.name||'')+'」の領収書をお送りいたします。<br>'
+    +'お申込番号：<b style="font-size:15px">'+(esc(orderNo)||'（申込番号なし）')+'</b></div>';
+  let foot='';
+  if(s.claimUrl&&orderNo){
+    foot='<div style="font-family:\'Hiragino Kaku Gothic ProN\',\'Yu Gothic\',Meiryo,sans-serif;font-size:12px;line-height:1.9;color:#374151;background:#f4f6fa;border-radius:8px;padding:14px 16px;margin-top:18px">'
+      +'<b>領収書の再取得・修正について</b><br>'
+      +'以下のページから、いつでも領収書を再取得（PNG保存・印刷）できます。<br>'
+      +'<a href="'+esc(s.claimUrl)+'" style="color:#2f6df6">'+esc(s.claimUrl)+'</a><br>'
+      +'ログインには「このメールを受信したメールアドレス」と「上記のお申込番号」をご入力ください。<br>'
+      +'宛名・金額・但し書きの修正は<b>発行日から2週間以内</b>に同ページから行えます。それ以降の修正は事務局までご連絡ください。</div>';
+  }
+  return head+inner+foot;
+}
 function autoGroupReceipts(eid){
   const e=getEvent(eid),groups={};
   e.participants.filter(p=>p.status!=='cancel'&&p.groupId).forEach(p=>{(groups[p.groupId]=groups[p.groupId]||[]).push(p);});
@@ -711,9 +744,9 @@ async function sendReceipt(eid,pid){
   if(!p.email){if(!confirm('送信先メールアドレスが未登録です。発行済みフラグだけ立てますか？'))return;issueReceiptNo(p);p.receipt.issued=true;p.receipt.issuedAt=new Date().toISOString();save();render();return;}
   const mid=uid();
   const dispNo=issueReceiptNo(p); // 採番（編集後の再送は R-xxxxx-1… ＋（再））
-  const payload={type:'receipt',to:p.email,event:{name:e.name,date:e.date},receipt:{no:dispNo,name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'懇親会費として'},html:receiptHTML(e,p)+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')};
+  const payload={type:'receipt',to:p.email,event:{name:e.name,date:e.date},receipt:{no:dispNo,name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'懇親会費として'},html:receiptMailHTML(e,p,receiptHTML(e,p))+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')};
   const r=await recendSend(payload);p.receipt.issued=true;p.receipt.issuedAt=new Date().toISOString();
-  if(r.ok){p.receipt.sentAt=new Date().toISOString();logMail(e,{kind:'領収書'+(p.receipt.reissue?'（再発行）':''),subject:'【領収書】'+e.name+'（'+dispNo+'）',body:'領収書番号:'+dispNo+' / 宛名:'+(p.receipt.name||p.company||p.name)+' / 金額:'+yen(p.receipt.amount??p.amount)+' / 但し:'+(p.receipt.note||'懇親会費として'),count:1,status:'sent',recipients:[{to:p.email,name:p.name,pid:p.id,mid,ok:true}]});closeModal();render();alert('領収書（'+dispNo+'）をrecend経由で送信しました。');}
+  if(r.ok){p.receipt.sentAt=new Date().toISOString();logMail(e,{kind:'領収書'+(p.receipt.reissue?'（再発行）':''),subject:'【領収書】'+e.name+'（'+dispNo+'）',body:'領収書番号:'+dispNo+' / 宛名:'+(p.receipt.name||p.company||p.name)+' / 金額:'+yen(p.receipt.amount??p.amount)+' / 但し:'+(p.receipt.note||'懇親会費として')+' / 申込番号:'+(p.groupId||'-'),count:1,status:'sent',recipients:[{to:p.email,name:p.name,pid:p.id,mid,ok:true}]});await pushReceiptRecords(e,[p]);closeModal();render();alert('領収書（'+dispNo+'）をrecend経由で送信しました。');}
   else if(r.fallback){const sub='【領収書】'+e.name,bd=p.receipt.name+' 様\n\n領収書を発行いたしました。金額：'+yen(p.receipt.amount??p.amount)+'\n但し：'+p.receipt.note;window.open('mailto:'+encodeURIComponent(p.email)+'?subject='+encodeURIComponent(sub)+'&body='+encodeURIComponent(bd));save();closeModal();render();}
   else alert('送信失敗：'+(r.error||r.status));
 }
@@ -723,9 +756,9 @@ async function sendAllReceipts(eid){
   if(!confirm(targets.length+'名に領収書を発行・送信します。'))return;
   const recs=targets.map(p=>({p,mid:uid()}));
   recs.forEach(({p})=>issueReceiptNo(p)); // 発行順に連番を採番
-  const payload={type:'receipt_batch',event:{name:e.name,date:e.date},items:recs.map(({p,mid})=>({to:p.email,no:receiptDisplayNo(p),name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'懇親会費として',html:receiptHTML(e,p)+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')}))};
+  const payload={type:'receipt_batch',event:{name:e.name,date:e.date},items:recs.map(({p,mid})=>({to:p.email,no:receiptDisplayNo(p),name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'懇親会費として',html:receiptMailHTML(e,p,receiptHTML(e,p))+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')}))};
   const r=await recendSend(payload),now=new Date().toISOString();
-  if(r.ok){targets.forEach(p=>{p.receipt.issued=true;p.receipt.issuedAt=now;p.receipt.sentAt=now;});const res=(r.data&&r.data.results)||[];logMail(e,{kind:'領収書（一括）',subject:'【領収書】'+e.name,body:'（領収書HTML・一括発行）',count:targets.length,status:'sent',recipients:recs.map(({p,mid},i)=>({to:p.email,name:p.name,pid:p.id,mid,ok:res[i]?!!res[i].ok:true}))});render();alert(targets.length+'件の領収書を送信しました。');}
+  if(r.ok){targets.forEach(p=>{p.receipt.issued=true;p.receipt.issuedAt=now;p.receipt.sentAt=now;});const res=(r.data&&r.data.results)||[];logMail(e,{kind:'領収書（一括）',subject:'【領収書】'+e.name,body:'（領収書HTML・一括発行）',count:targets.length,status:'sent',recipients:recs.map(({p,mid},i)=>({to:p.email,name:p.name,pid:p.id,mid,ok:res[i]?!!res[i].ok:true}))});await pushReceiptRecords(e,targets);render();alert(targets.length+'件の領収書を送信しました。');}
   else if(r.fallback){copyToClipboard(payload.items.map(it=>'To:'+it.to+' / '+it.name+' / '+yen(it.amount)+' / '+it.note).join('\n'));targets.forEach(p=>{p.receipt.issued=true;p.receipt.issuedAt=now;});save();render();alert('recend未設定のため一覧をコピーしました（発行済みにしました）。');}
   else alert('送信失敗：'+(r.error||r.status));
 }
@@ -950,11 +983,13 @@ function viewSettings(){
    +'<label class="fld"><span>発行者名</span><input id="st_issuer" value="'+esc(s.receiptIssuer||'')+'"></label>'
    +'<label class="fld"><span>住所（郵便番号含む・領収書フッターに表示）</span><input id="st_addr" value="'+esc(s.companyAddr||'')+'" placeholder="例）〒150-0000 東京都渋谷区…"></label>'
    +'<label class="fld"><span>電話番号（任意）</span><input id="st_phone" value="'+esc(s.issuerPhone||'')+'" placeholder="例）03-0000-0000"></label>'
-   +'<label class="fld"><span>事業者登録番号（インボイス）</span><input id="st_regnum" value="'+esc(s.issuerRegNum||RECEIPT_REG_DEFAULT)+'"></label></div>'
+   +'<label class="fld"><span>事業者登録番号（インボイス）</span><input id="st_regnum" value="'+esc(s.issuerRegNum||RECEIPT_REG_DEFAULT)+'"></label>'
+   +'<label class="fld"><span>受取人ページURL（claim.html の公開URL）</span><input id="st_claim" value="'+esc(s.claimUrl||'')+'" placeholder="https://fp-tools.github.io/infotop-konshinkai/claim.html"></label>'
+   +'<p class="hint" style="margin:0">設定すると、領収書メールに「再取得・修正ページ」の案内と申込番号が記載されます。受取人はメールアドレス＋申込番号で領収書を再取得でき、発行から2週間以内は宛名・金額・但書を自分で修正できます（修正すると（再）付きで再発行）。</p></div>'
    +'<div class="card pad"><b>データ管理</b><p class="hint" style="margin:4px 0 12px">データはこのブラウザ内に保存されています。バックアップや別PCへの移行にご利用ください。</p><div class="flex"><button class="btn" onclick="exportAll()">'+ic('download',14)+' 全データをバックアップ(JSON)</button><label class="btn" style="margin:0">'+ic('upload',14)+' 復元<input type="file" accept=".json" style="display:none" onchange="importAll(this)"></label><button class="btn danger" onclick="wipe()">全データ削除</button></div></div>'
    +'<div style="text-align:right"><button class="btn primary" onclick="saveSettings()">設定を保存</button></div></div>';
 }
-function saveSettings(){const s=store.settings;s.recendUrl=val('st_url').trim();s.recendToken=val('st_token').trim();s.receiptIssuer=val('st_issuer');s.companyAddr=val('st_addr');s.issuerPhone=val('st_phone').trim();s.issuerRegNum=val('st_regnum').trim()||RECEIPT_REG_DEFAULT;s.formApiUrl=val('st_form').trim();s.formApiToken=val('st_formtok').trim();s.payPageUrl=val('st_paypage').trim();s.payItemId=val('st_payitem').trim();s.payReceiveUrl=val('st_payrecv').trim();s.payReceiveToken=val('st_payrecvtok').trim();s.autoReplyOn=chk('st_arOn');s.autoReplySubj=val('st_arSubj')||AR_SUBJ_DEFAULT;s.autoReplyBody=document.getElementById('st_arBody')?document.getElementById('st_arBody').value:s.autoReplyBody;save();alert('保存しました');}
+function saveSettings(){const s=store.settings;s.recendUrl=val('st_url').trim();s.recendToken=val('st_token').trim();s.receiptIssuer=val('st_issuer');s.companyAddr=val('st_addr');s.issuerPhone=val('st_phone').trim();s.issuerRegNum=val('st_regnum').trim()||RECEIPT_REG_DEFAULT;s.claimUrl=val('st_claim').trim();s.formApiUrl=val('st_form').trim();s.formApiToken=val('st_formtok').trim();s.payPageUrl=val('st_paypage').trim();s.payItemId=val('st_payitem').trim();s.payReceiveUrl=val('st_payrecv').trim();s.payReceiveToken=val('st_payrecvtok').trim();s.autoReplyOn=chk('st_arOn');s.autoReplySubj=val('st_arSubj')||AR_SUBJ_DEFAULT;s.autoReplyBody=document.getElementById('st_arBody')?document.getElementById('st_arBody').value:s.autoReplyBody;save();alert('保存しました');}
 function exportAll(){downloadFile('懇親会管理_backup_'+todayISO()+'.json',JSON.stringify(store,null,2));}
 function importAll(input){const f=input.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!d.events)throw 0;d.people=d.people||[];d.venues=d.venues||[];store=d;save();alert('復元しました');go('dashboard');}catch(e){alert('ファイルが不正です');}};r.readAsText(f);}
 function wipe(){if(!confirm('全データを削除します。元に戻せません。よろしいですか？'))return;if(!confirm('本当に削除しますか？'))return;store=defaultStore();save();go('dashboard');}
