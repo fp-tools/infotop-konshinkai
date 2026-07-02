@@ -5,8 +5,12 @@ main = "recend-worker.js"
 compatibility_date = "2026-07-01"
 account_id = "d9efe74340086b0eb0ff36f97773fe07"
 
-# ダッシュボードで設定済みの環境変数（TEST_MODE等）を消さない
+# ダッシュボードで設定済みの環境変数を消さない
 keep_vars = true
+
+[vars]
+# 本番運用: 実際の宛先に送信する（テスト配信に戻す場合は "true" にして再デプロイ）
+TEST_MODE = "false"
 
 kv_namespaces = [
   { binding = "MAILLOG", id = "dfdc1ac55037420ca195fe2dd9953dd3" }
