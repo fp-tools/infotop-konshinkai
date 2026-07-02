@@ -569,8 +569,9 @@ function receiptHTML(e,p){const s=store.settings,no='R'+(e.date||'').replace(/-/
 function previewReceipt(eid,pid){const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);modal('領収書プレビュー',receiptHTML(e,p),[{label:'閉じる',cls:'btn',on:'closeModal()'},{label:'印刷',cls:'btn',on:'printNode()'},{label:'発行・送信',cls:'btn primary',on:"sendReceipt('"+eid+"','"+pid+"')"}],600);}
 function previewReminder(eid){const e=getEvent(eid),p=(e.participants||[]).find(x=>x.status!=='cancel')||newParticipant();modal('リマインド プレビュー（1人目・HTMLメール表示）','<div class="card pad" style="font-size:13px"><div style="margin-bottom:10px"><b>件名：</b>'+esc(mergeBody(val('rm_subj'),e,p))+'</div><div class="divider"></div>'+mergeBodyHTML(document.getElementById('rm_body').value,e,p,'')+'</div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],640);}
 function mergeBody(t,e,p){return String(t).replace(/{{name}}/g,p.name||'ご参加者').replace(/{{event}}/g,e.name||'').replace(/{{date}}/g,e.date||'').replace(/{{venue}}/g,e.venue||'').replace(/{{amount}}/g,yen(p.amount??e.fee));}
-/* QRコード画像URL（メール埋め込み用。メールではJS実行不可のため外部QR画像APIを使用） */
-function qrImgUrl(text,size){return 'https://api.qrserver.com/v1/create-qr-code/?size='+size+'x'+size+'&qzone=2&data='+encodeURIComponent(text);}
+/* QRコード画像URL（メール埋め込み用。メールではJS実行不可のため画像URL参照にする）
+   recend Worker設定済みなら自前の /qr（外部非依存）、未設定時のみ外部API(goqr.me)にフォールバック */
+function qrImgUrl(text,size){const b=workerBase();return b?b+'/qr?size='+size+'&data='+encodeURIComponent(text):'https://api.qrserver.com/v1/create-qr-code/?size='+size+'x'+size+'&qzone=2&data='+encodeURIComponent(text);}
 function workerBase(){return (store.settings.recendUrl||'').replace(/\/+$/,'');}
 /* テキスト版本文: {{qr}} は画像を出せないため案内文に置換 */
 function mergeText(t,e,p){return mergeBody(t,e,p).replace(/{{qr}}/g,'（受付用QRコードはHTMLメールでご覧いただけます）');}
