@@ -40,10 +40,11 @@ function ic(name,size=16){return '<svg viewBox="0 0 24 24" width="'+size+'" heig
 /* ---------- Store ---------- */
 const AR_SUBJ_DEFAULT='【受付QRコード】{{event}} お申込みありがとうございます';
 const AR_BODY_DEFAULT='{{name}} 様\n\nこの度は「{{event}}」にお申込みいただき、誠にありがとうございます。\n当日は受付にて、下記のQRコードをご提示ください。\n\n{{qr}}\n\n▼開催日：{{date}}\n▼会場　：{{venue}}\n▼参加費：{{amount}}\n\n当日お会いできることを楽しみにしております。';
-const defaultStore=()=>({events:[],people:[],venues:[],
-  settings:{recendUrl:'',recendToken:'',companyName:'株式会社インフォトップ',receiptIssuer:'株式会社インフォトップ',companyAddr:'',formApiUrl:'',formApiToken:'',payReceiveUrl:'',payReceiveToken:'',payPageUrl:'',payItemId:'',autoReplyOn:false,autoReplySubj:AR_SUBJ_DEFAULT,autoReplyBody:AR_BODY_DEFAULT}});
+const RECEIPT_REG_DEFAULT='T6010001102185'; // 当社の事業者登録番号（全領収書に固定記載）
+const defaultStore=()=>({events:[],people:[],venues:[],receiptSeq:0,
+  settings:{recendUrl:'',recendToken:'',companyName:'株式会社インフォトップ',receiptIssuer:'株式会社インフォトップ',companyAddr:'',issuerPhone:'',issuerRegNum:RECEIPT_REG_DEFAULT,formApiUrl:'',formApiToken:'',payReceiveUrl:'',payReceiveToken:'',payPageUrl:'',payItemId:'',autoReplyOn:false,autoReplySubj:AR_SUBJ_DEFAULT,autoReplyBody:AR_BODY_DEFAULT}});
 let store=load();
-function load(){try{const r=JSON.parse(localStorage.getItem(LS_KEY));if(r&&r.events){r.people=r.people||[];r.venues=r.venues||[];r.settings=Object.assign(defaultStore().settings,r.settings||{});return r;}}catch(e){}return defaultStore();}
+function load(){try{const r=JSON.parse(localStorage.getItem(LS_KEY));if(r&&r.events){r.people=r.people||[];r.venues=r.venues||[];r.receiptSeq=r.receiptSeq||0;r.settings=Object.assign(defaultStore().settings,r.settings||{});return r;}}catch(e){}return defaultStore();}
 function save(){localStorage.setItem(LS_KEY,JSON.stringify(store));renderStoreInfo();}
 function getEvent(id){return store.events.find(e=>e.id===id);}
 // 複数タブ/ウィンドウで同じファイルを開いている場合の上書き事故対策：
@@ -172,7 +173,7 @@ function renderEventDetail(v){
 }
 function delEvent(id){if(!confirm('この開催を削除します。よろしいですか？'))return;store.events=store.events.filter(e=>e.id!==id);save();go('events');}
 
-function newParticipant(o={}){return {id:uid(),name:'',kana:'',company:'',email:'',phone:'',amount:null,feeOptLabel:'',secondParty:false,groupId:'',companionOf:'',status:'active',attended:'',checkedIn:false,checkedInAt:'',note:'',payStatus:'unpaid',payMethod:'',orderId:'',paidAmount:null,changeGiven:null,paidAt:'',personId:'',ptype:'',receipt:{name:'',note:'参加費として',amount:null,split:false,issued:false,issuedAt:'',sentAt:''},source:'manual',edited:[],raw:{},...o};}
+function newParticipant(o={}){return {id:uid(),name:'',kana:'',company:'',email:'',phone:'',amount:null,feeOptLabel:'',secondParty:false,groupId:'',companionOf:'',status:'active',attended:'',checkedIn:false,checkedInAt:'',note:'',payStatus:'unpaid',payMethod:'',orderId:'',paidAmount:null,changeGiven:null,paidAt:'',personId:'',ptype:'',receipt:{name:'',note:'懇親会費として',amount:null,split:false,issued:false,issuedAt:'',sentAt:'',no:'',revision:0,reissue:false,dirty:false,history:[]},source:'manual',edited:[],raw:{},...o};}
 function companionsOf(e,mainId){return (e.participants||[]).filter(p=>p.companionOf===mainId&&p.status!=='cancel');}
 function isMain(p){return !p.companionOf;}
 function orderedParticipants(e){const out=[];(e.participants||[]).filter(p=>isMain(p)&&p.status!=='cancel').forEach(m=>{out.push(m);companionsOf(e,m.id).forEach(c=>out.push(c));});return out;}
@@ -550,23 +551,86 @@ function tabMail(e){
   h+='<div class="card pad"><div class="between" style="margin-bottom:6px"><b>'+ic('receipt',16)+' 領収書発行</b><div class="flex"><button class="btn sm" onclick="autoGroupReceipts(\''+e.id+'\')">申込グループで自動まとめ</button><button class="btn sm primary" onclick="sendAllReceipts(\''+e.id+'\')">未送信を一括発行・送信</button></div></div><div class="hint" style="margin-bottom:10px">同時申込でも「別会計」にすれば個別の宛名・金額で発行できます。発行先はフォーム入力のメールアドレス。</div><div style="overflow:auto"><table><thead><tr><th>宛名</th><th>金額</th><th>但し書き</th><th>別会計</th><th>送信先</th><th>状態</th><th></th></tr></thead><tbody>';
   ps.forEach(p=>{h+='<tr><td><input value="'+esc(p.receipt.name||p.company||p.name)+'" style="min-width:150px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'name\',this.value)"></td>'
     +'<td><input type="number" value="'+(p.receipt.amount??p.amount??0)+'" style="width:100px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'amount\',this.value)"></td>'
-    +'<td><input value="'+esc(p.receipt.note||'参加費として')+'" style="min-width:130px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'note\',this.value)"></td>'
+    +'<td><input value="'+esc(p.receipt.note||'懇親会費として')+'" style="min-width:130px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'note\',this.value)"></td>'
     +'<td style="text-align:center"><input type="checkbox" '+(p.receipt.split?'checked':'')+' onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'split\',this.checked)" title="別会計"></td>'
     +'<td>'+(esc(p.email)||'<span class="tag danger">無</span>')+'</td>'
-    +'<td>'+(p.receipt.sentAt?'<span class="tag ok">送信済</span><div class="hint">'+esc(p.receipt.sentAt.slice(0,10))+'</div>':p.receipt.issued?'<span class="tag warn">発行済</span>':'<span class="tag gray">未</span>')+'</td>'
+    +'<td>'+(p.receipt.sentAt?'<span class="tag ok">送信済</span>':p.receipt.issued?'<span class="tag warn">発行済</span>':'<span class="tag gray">未</span>')+(receiptDisplayNo(p)?'<div class="hint">'+esc(receiptDisplayNo(p))+(p.receipt.reissue?'（再）':'')+'</div>':'')+(p.receipt.dirty?'<div class="hint" style="color:#9a7400">変更あり→再発行</div>':'')+'</td>'
     +'<td class="flex"><button class="btn sm" onclick="previewReceipt(\''+e.id+'\',\''+p.id+'\')">プレビュー</button><button class="btn sm primary" onclick="sendReceipt(\''+e.id+'\',\''+p.id+'\')">発行・送信</button></td></tr>';});
   return h+'</tbody></table></div></div>';
 }
-function rcpt(eid,pid,k,v){const p=getEvent(eid).participants.find(x=>x.id===pid);if(k==='amount')v=Number(v)||0;p.receipt[k]=v;save();}
+function rcpt(eid,pid,k,v){const p=getEvent(eid).participants.find(x=>x.id===pid);if(k==='amount')v=Number(v)||0;
+  const before=p.receipt[k];if(before===v)return;
+  // 発行済み領収書の宛名・金額・但書の変更は修正履歴に記録し、次回送信を再発行（R-xxxxx-1…＋「（再）」）にする
+  if(p.receipt.no&&['name','amount','note'].includes(k)){p.receipt.history=p.receipt.history||[];p.receipt.history.push({at:new Date().toISOString(),field:k,before,after:v});p.receipt.dirty=true;}
+  p.receipt[k]=v;save();}
+/* ---- 領収書 採番・税計算・敬称（領収書作成ツールの仕様に準拠） ---- */
+const CORPORATE_KEYWORDS=['株式会社','合同会社','有限会社','合資会社','合名会社','一般社団法人','公益社団法人','一般財団法人','公益財団法人','NPO法人','npo法人','医療法人','学校法人','社会福祉法人','協同組合','事業協同組合','協会','財団','機構','組合'];
+function honorificFor(name){return CORPORATE_KEYWORDS.some(kw=>String(name||'').includes(kw))?'御中':'様';}
+function taxBreakdown(amountWithTax,rate=10){const a=Number(amountWithTax);if(!isFinite(a)||a<=0)return{tax:0,pretax:0};const tax=Math.floor(a*rate/(100+rate));return{tax,pretax:a-tax};}
+function nextReceiptNo(){store.receiptSeq=(store.receiptSeq||0)+1;return 'R-'+String(store.receiptSeq).padStart(5,'0');}
+/* 発行時に呼ぶ: 未採番なら連番を採番。発行後に編集(dirty)されていれば版数を+1して再発行扱いにする */
+function issueReceiptNo(p){const r=p.receipt;
+  if(!r.no){r.no=nextReceiptNo();r.revision=0;r.reissue=false;}
+  else if(r.dirty){r.revision=(r.revision||0)+1;r.reissue=true;r.dirty=false;}
+  save();return receiptDisplayNo(p);}
+function receiptDisplayNo(p){const r=p.receipt;return r.no?(r.no+(r.revision?'-'+r.revision:'')):'';}
 function autoGroupReceipts(eid){
   const e=getEvent(eid),groups={};
   e.participants.filter(p=>p.status!=='cancel'&&p.groupId).forEach(p=>{(groups[p.groupId]=groups[p.groupId]||[]).push(p);});
   let n=0;Object.values(groups).forEach(g=>{if(g.length>1){const anySplit=g.some(p=>p.receipt.split);if(!anySplit){const rep=g[0];rep.receipt.name=rep.company||rep.name;rep.receipt.amount=g.reduce((s,p)=>s+(Number(p.amount)||0),0);g.slice(1).forEach(p=>{p.receipt.amount=0;p.receipt.note='（同時申込・代表者宛にまとめ）';});n++;}}});
   save();render();alert(n+'グループを代表者宛にまとめました。別会計にしたい場合は各行の「別会計」にチェックして金額を分けてください。');
 }
-function receiptHTML(e,p){const s=store.settings,no='R'+(e.date||'').replace(/-/g,'')+'-'+p.id.slice(-4).toUpperCase();
-  return '<div style="font-family:serif;padding:30px;border:2px solid #333;max-width:520px;margin:auto;color:#111"><div style="text-align:center;font-size:22px;letter-spacing:.4em;font-weight:bold;border-bottom:2px solid #333;padding-bottom:8px">領　収　書</div><div style="text-align:right;font-size:12px;margin-top:8px">No. '+no+'　発行日 '+esc(todayISO())+'</div><div style="font-size:18px;margin:18px 0 6px"><u>　'+esc(p.receipt.name||p.company||p.name)+'　</u> 様</div><div style="text-align:center;font-size:28px;font-weight:bold;border-top:1px solid #333;border-bottom:1px solid #333;padding:10px 0;margin:10px 0">金 '+yen(p.receipt.amount??p.amount)+' 也</div><div style="font-size:14px">但し、<b>'+esc(p.receipt.note||'参加費として')+'</b>　上記正に領収いたしました。</div><div style="margin-top:8px;font-size:13px">対象：'+esc(e.name)+'（'+esc(e.date)+'）'+(p.payMethod?'／'+esc(p.payMethod)+'決済':'')+'</div><div style="text-align:right;margin-top:24px;font-size:13px;line-height:1.8">'+esc(s.receiptIssuer||s.companyName)+'<br>'+esc(s.companyAddr||'')+'</div></div>';}
-function previewReceipt(eid,pid){const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);modal('領収書プレビュー',receiptHTML(e,p),[{label:'閉じる',cls:'btn',on:'closeModal()'},{label:'印刷',cls:'btn',on:'printNode()'},{label:'発行・送信',cls:'btn primary',on:"sendReceipt('"+eid+"','"+pid+"')"}],600);}
+/* 券面HTML（領収書作成ツール receiptHtml.js のデザインをメール互換のtable組みで再現）
+   仕様: 領収書番号(右上)／（再）表記／敬称自動(御中・様)／税込金額＋内訳(税抜・消費税)／
+   5万円以上で収入印紙枠／但し書き／支払日／発行者(住所・TEL・登録番号 T6010001102185) */
+function receiptHTML(e,p){
+  const s=store.settings;
+  const no=receiptDisplayNo(p)||'（発行時に採番）';
+  const reissue=!!p.receipt.reissue;
+  const addressee=p.receipt.name||p.company||p.name||'';
+  const hon=honorificFor(addressee);
+  const amount=Number(p.receipt.amount??p.amount)||0;
+  const hasAmount=amount>0;
+  const {tax,pretax}=taxBreakdown(amount,10);
+  const needsStamp=amount>=50000;
+  const note=p.receipt.note||'懇親会費として';
+  const payDate=(p.paidAt||'').slice(0,10)||e.date||'';
+  const fmtJP=d=>{if(!d)return '　　年　月　日';const m=d.split('-');return m[0]+'年'+Number(m[1])+'月'+Number(m[2])+'日';};
+  const regNum=s.issuerRegNum||RECEIPT_REG_DEFAULT;
+  return '<div style="width:560px;max-width:100%;margin:auto;background:#fff;color:#0f172a;font-family:\'Noto Sans JP\',\'Hiragino Sans\',\'Yu Gothic\',Meiryo,sans-serif;padding:40px 44px;border:1px solid #e2e8f0">'
+    +'<div style="text-align:right;font-size:11px;color:#64748b;margin-bottom:8px">領収書番号：'+esc(no)+'</div>'
+    +'<div style="text-align:center;border-bottom:3px double #0f172a;padding-bottom:10px;margin-bottom:28px"><span style="font-size:22px;font-weight:900;letter-spacing:.25em">領　収　書</span>'+(reissue?'<span style="font-size:12px;font-weight:700;color:#b91c1c;margin-left:8px">（再）</span>':'')+'</div>'
+    +'<table width="100%" cellpadding="0" cellspacing="0" style="border-bottom:1.5px solid #0f172a;margin-bottom:22px"><tr><td style="font-size:16px;font-weight:700;padding-bottom:5px">'+(esc(addressee)||'　　　　　　　　　　　')+'</td><td style="font-size:12px;white-space:nowrap;text-align:right;vertical-align:bottom;padding-bottom:5px">　'+hon+'</td></tr></table>'
+    +'<table width="100%" cellpadding="0" cellspacing="0" style="border:2px solid #0f172a;background:#f8fafc;margin-bottom:14px"><tr>'
+      +'<td style="font-size:12px;font-weight:700;color:#374151;white-space:nowrap;padding:13px 0 13px 14px">金　額</td>'
+      +'<td style="font-size:23px;font-weight:900;letter-spacing:.04em;padding:13px 10px">¥ '+(hasAmount?amount.toLocaleString('ja-JP'):'―')+'</td>'
+      +(hasAmount?'<td style="font-size:10px;color:#64748b;white-space:nowrap;vertical-align:middle">（税込）</td>':'')
+      +(needsStamp?'<td style="padding:8px 12px 8px 0;text-align:right;vertical-align:middle"><div style="display:inline-block;width:44px;height:44px;border:1px solid #94a3b8;font-size:9px;line-height:1.5;color:#9ca3af;text-align:center;padding-top:6px;box-sizing:border-box">収入<br>印紙</div></td>':'')
+    +'</tr></table>'
+    +(hasAmount?'<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:20px;font-size:11px">'
+      +'<tr style="border-bottom:1px solid #e2e8f0"><td style="color:#64748b;padding:7px 5px 7px 10px">課税対象額（税抜）</td><td style="text-align:right;padding:7px 5px;font-weight:600;color:#374151">¥ '+pretax.toLocaleString('ja-JP')+'</td></tr>'
+      +'<tr style="border-bottom:1px solid #e2e8f0"><td style="color:#64748b;padding:7px 5px 7px 10px">消費税額（10%）</td><td style="text-align:right;padding:7px 5px;font-weight:600;color:#374151">¥ '+tax.toLocaleString('ja-JP')+'</td></tr>'
+    +'</table>':'')
+    +'<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:14px"><tr>'
+      +'<td style="font-size:12px;white-space:nowrap;color:#374151;padding-bottom:6px;vertical-align:bottom">但　し　</td>'
+      +'<td style="font-size:12.5px;font-weight:500;border-bottom:1px solid #94a3b8;padding-bottom:3px">'+(esc(note)||'　　　　　　　　　　　　　　　')+'</td>'
+    +'</tr></table>'
+    +'<div style="font-size:11px;color:#374151;margin-bottom:26px">上記正に領収いたしました。（対象：'+esc(e.name)+(p.payMethod?'／'+esc(p.payMethod)+'決済':'')+'）</div>'
+    +'<table width="100%" cellpadding="0" cellspacing="0" style="border-top:2px solid #0f172a"><tr><td style="padding-top:12px">'
+      +'<div style="text-align:right;font-size:12px;color:#374151;margin-bottom:10px">'+fmtJP(payDate)+'</div>'
+      +(s.companyAddr?'<div style="text-align:right;font-size:11px;color:#64748b;line-height:1.6">'+esc(s.companyAddr)+'</div>':'')
+      +'<div style="text-align:right;font-size:15px;font-weight:800;padding-bottom:4px;margin-top:4px"><span style="border-bottom:1.5px solid #0f172a;padding-bottom:3px">'+esc(s.receiptIssuer||s.companyName||'')+'</span></div>'
+      +(s.issuerPhone?'<div style="text-align:right;font-size:11px;color:#64748b;margin-top:5px">TEL '+esc(s.issuerPhone)+'</div>':'')
+      +'<div style="text-align:right;font-size:11px;color:#64748b;margin-top:3px">登録番号：'+esc(regNum)+'</div>'
+    +'</td></tr></table>'
+  +'</div>';}
+function previewReceipt(eid,pid){const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);
+  const hist=(p.receipt.history||[]);
+  const FLD={name:'宛名',amount:'金額',note:'但し書き'};
+  const histHtml=hist.length?'<div class="card pad" style="margin-top:14px"><b style="font-size:12.5px">修正履歴（'+hist.length+'件）</b><table style="margin-top:6px;font-size:12px"><thead><tr><th>日時</th><th>項目</th><th>変更前</th><th>変更後</th></tr></thead><tbody>'
+    +hist.map(h=>'<tr><td>'+fmtDT(h.at)+'</td><td>'+(FLD[h.field]||esc(h.field))+'</td><td>'+esc(h.field==='amount'?yen(h.before):h.before)+'</td><td>'+esc(h.field==='amount'?yen(h.after):h.after)+'</td></tr>').join('')
+    +'</tbody></table>'+(p.receipt.dirty?'<div class="hint" style="margin-top:6px;color:var(--warn)">※発行後に変更があるため、次回送信時に新しい番号（'+esc(p.receipt.no)+'-'+((p.receipt.revision||0)+1)+'）で「（再）」として再発行されます。</div>':'')+'</div>':'';
+  modal('領収書プレビュー'+(receiptDisplayNo(p)?' - '+receiptDisplayNo(p):''),receiptHTML(e,p)+histHtml,[{label:'閉じる',cls:'btn',on:'closeModal()'},{label:'印刷',cls:'btn',on:'printNode()'},{label:'発行・送信',cls:'btn primary',on:"sendReceipt('"+eid+"','"+pid+"')"}],660);}
 function previewReminder(eid){const e=getEvent(eid),p=(e.participants||[]).find(x=>x.status!=='cancel')||newParticipant();modal('リマインド プレビュー（1人目・HTMLメール表示）','<div class="card pad" style="font-size:13px"><div style="margin-bottom:10px"><b>件名：</b>'+esc(mergeBody(val('rm_subj'),e,p))+'</div><div class="divider"></div>'+mergeBodyHTML(document.getElementById('rm_body').value,e,p,'')+'</div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],640);}
 function mergeBody(t,e,p){return String(t).replace(/{{name}}/g,p.name||'ご参加者').replace(/{{event}}/g,e.name||'').replace(/{{date}}/g,e.date||'').replace(/{{venue}}/g,e.venue||'').replace(/{{amount}}/g,yen(p.amount??e.fee));}
 /* QRコード画像URL（メール埋め込み用。メールではJS実行不可のため画像URL参照にする）
@@ -644,11 +708,12 @@ async function sendTestReminder(eid){
 }
 async function sendReceipt(eid,pid){
   const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);
-  if(!p.email){if(!confirm('送信先メールアドレスが未登録です。発行済みフラグだけ立てますか？'))return;p.receipt.issued=true;p.receipt.issuedAt=new Date().toISOString();save();render();return;}
+  if(!p.email){if(!confirm('送信先メールアドレスが未登録です。発行済みフラグだけ立てますか？'))return;issueReceiptNo(p);p.receipt.issued=true;p.receipt.issuedAt=new Date().toISOString();save();render();return;}
   const mid=uid();
-  const payload={type:'receipt',to:p.email,event:{name:e.name,date:e.date},receipt:{name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'参加費として'},html:receiptHTML(e,p)+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')};
+  const dispNo=issueReceiptNo(p); // 採番（編集後の再送は R-xxxxx-1… ＋（再））
+  const payload={type:'receipt',to:p.email,event:{name:e.name,date:e.date},receipt:{no:dispNo,name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'懇親会費として'},html:receiptHTML(e,p)+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')};
   const r=await recendSend(payload);p.receipt.issued=true;p.receipt.issuedAt=new Date().toISOString();
-  if(r.ok){p.receipt.sentAt=new Date().toISOString();logMail(e,{kind:'領収書',subject:'【領収書】'+e.name,body:'（領収書HTML）宛名:'+(p.receipt.name||p.company||p.name)+' / 金額:'+yen(p.receipt.amount??p.amount),count:1,status:'sent',recipients:[{to:p.email,name:p.name,pid:p.id,mid,ok:true}]});closeModal();render();alert('領収書をrecend経由で送信しました。');}
+  if(r.ok){p.receipt.sentAt=new Date().toISOString();logMail(e,{kind:'領収書'+(p.receipt.reissue?'（再発行）':''),subject:'【領収書】'+e.name+'（'+dispNo+'）',body:'領収書番号:'+dispNo+' / 宛名:'+(p.receipt.name||p.company||p.name)+' / 金額:'+yen(p.receipt.amount??p.amount)+' / 但し:'+(p.receipt.note||'懇親会費として'),count:1,status:'sent',recipients:[{to:p.email,name:p.name,pid:p.id,mid,ok:true}]});closeModal();render();alert('領収書（'+dispNo+'）をrecend経由で送信しました。');}
   else if(r.fallback){const sub='【領収書】'+e.name,bd=p.receipt.name+' 様\n\n領収書を発行いたしました。金額：'+yen(p.receipt.amount??p.amount)+'\n但し：'+p.receipt.note;window.open('mailto:'+encodeURIComponent(p.email)+'?subject='+encodeURIComponent(sub)+'&body='+encodeURIComponent(bd));save();closeModal();render();}
   else alert('送信失敗：'+(r.error||r.status));
 }
@@ -657,7 +722,8 @@ async function sendAllReceipts(eid){
   if(!targets.length){alert('送信対象（未送信・金額あり）がありません。');return;}
   if(!confirm(targets.length+'名に領収書を発行・送信します。'))return;
   const recs=targets.map(p=>({p,mid:uid()}));
-  const payload={type:'receipt_batch',event:{name:e.name,date:e.date},items:recs.map(({p,mid})=>({to:p.email,name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'参加費として',html:receiptHTML(e,p)+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')}))};
+  recs.forEach(({p})=>issueReceiptNo(p)); // 発行順に連番を採番
+  const payload={type:'receipt_batch',event:{name:e.name,date:e.date},items:recs.map(({p,mid})=>({to:p.email,no:receiptDisplayNo(p),name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'懇親会費として',html:receiptHTML(e,p)+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')}))};
   const r=await recendSend(payload),now=new Date().toISOString();
   if(r.ok){targets.forEach(p=>{p.receipt.issued=true;p.receipt.issuedAt=now;p.receipt.sentAt=now;});const res=(r.data&&r.data.results)||[];logMail(e,{kind:'領収書（一括）',subject:'【領収書】'+e.name,body:'（領収書HTML・一括発行）',count:targets.length,status:'sent',recipients:recs.map(({p,mid},i)=>({to:p.email,name:p.name,pid:p.id,mid,ok:res[i]?!!res[i].ok:true}))});render();alert(targets.length+'件の領収書を送信しました。');}
   else if(r.fallback){copyToClipboard(payload.items.map(it=>'To:'+it.to+' / '+it.name+' / '+yen(it.amount)+' / '+it.note).join('\n'));targets.forEach(p=>{p.receipt.issued=true;p.receipt.issuedAt=now;});save();render();alert('recend未設定のため一覧をコピーしました（発行済みにしました）。');}
@@ -880,11 +946,15 @@ function viewSettings(){
    +'<label class="fld"><span>決済受信エンドポイントURL（Webhook受け）</span><input id="st_payrecv" value="'+esc(s.payReceiveUrl||'')+'" placeholder="https://.../payments.json"></label>'
    +'<label class="fld"><span>認証トークン（任意）</span><input id="st_payrecvtok" value="'+esc(s.payReceiveToken||'')+'"></label>'
    +'<details style="margin-top:6px"><summary class="hint" style="cursor:pointer">購入者情報送信API（Webhook）の項目仕様</summary><div class="hint" style="margin-top:8px;line-height:1.7">登録(注文確定)：<code>type=3 &item &itemname &itemcount &user &username &usermail &order</code><br>取消(キャンセル)：<code>type=4 &item &user &order</code><br>処理コード：1=入会 / 2=退会 / 3=注文確定 / 4=キャンセル / 5=課金 / 6=入会&課金。<br>本アプリは <code>usermail</code> で参加者を照合し、type=3で「支払済」+<code>order</code>を注文IDに、type=4で「取消」にします。受信サーバ側で受けた内容をJSON配列で返すURLを上に設定してください。</div></details></div>'
-   +'<div class="card pad"><b>領収書の発行者情報</b><label class="fld" style="margin-top:12px"><span>発行者名</span><input id="st_issuer" value="'+esc(s.receiptIssuer||'')+'"></label><label class="fld"><span>住所・登録番号など（領収書フッターに表示）</span><input id="st_addr" value="'+esc(s.companyAddr||'')+'" placeholder="例）東京都渋谷区… / 登録番号 T..."></label></div>'
+   +'<div class="card pad"><b>領収書の発行者情報</b><p class="hint" style="margin:4px 0 12px">領収書はインボイス対応の様式（税込金額＋税抜/消費税内訳・登録番号記載・R-00001形式の連番・5万円以上で収入印紙枠）で発行されます。</p>'
+   +'<label class="fld"><span>発行者名</span><input id="st_issuer" value="'+esc(s.receiptIssuer||'')+'"></label>'
+   +'<label class="fld"><span>住所（郵便番号含む・領収書フッターに表示）</span><input id="st_addr" value="'+esc(s.companyAddr||'')+'" placeholder="例）〒150-0000 東京都渋谷区…"></label>'
+   +'<label class="fld"><span>電話番号（任意）</span><input id="st_phone" value="'+esc(s.issuerPhone||'')+'" placeholder="例）03-0000-0000"></label>'
+   +'<label class="fld"><span>事業者登録番号（インボイス）</span><input id="st_regnum" value="'+esc(s.issuerRegNum||RECEIPT_REG_DEFAULT)+'"></label></div>'
    +'<div class="card pad"><b>データ管理</b><p class="hint" style="margin:4px 0 12px">データはこのブラウザ内に保存されています。バックアップや別PCへの移行にご利用ください。</p><div class="flex"><button class="btn" onclick="exportAll()">'+ic('download',14)+' 全データをバックアップ(JSON)</button><label class="btn" style="margin:0">'+ic('upload',14)+' 復元<input type="file" accept=".json" style="display:none" onchange="importAll(this)"></label><button class="btn danger" onclick="wipe()">全データ削除</button></div></div>'
    +'<div style="text-align:right"><button class="btn primary" onclick="saveSettings()">設定を保存</button></div></div>';
 }
-function saveSettings(){const s=store.settings;s.recendUrl=val('st_url').trim();s.recendToken=val('st_token').trim();s.receiptIssuer=val('st_issuer');s.companyAddr=val('st_addr');s.formApiUrl=val('st_form').trim();s.formApiToken=val('st_formtok').trim();s.payPageUrl=val('st_paypage').trim();s.payItemId=val('st_payitem').trim();s.payReceiveUrl=val('st_payrecv').trim();s.payReceiveToken=val('st_payrecvtok').trim();s.autoReplyOn=chk('st_arOn');s.autoReplySubj=val('st_arSubj')||AR_SUBJ_DEFAULT;s.autoReplyBody=document.getElementById('st_arBody')?document.getElementById('st_arBody').value:s.autoReplyBody;save();alert('保存しました');}
+function saveSettings(){const s=store.settings;s.recendUrl=val('st_url').trim();s.recendToken=val('st_token').trim();s.receiptIssuer=val('st_issuer');s.companyAddr=val('st_addr');s.issuerPhone=val('st_phone').trim();s.issuerRegNum=val('st_regnum').trim()||RECEIPT_REG_DEFAULT;s.formApiUrl=val('st_form').trim();s.formApiToken=val('st_formtok').trim();s.payPageUrl=val('st_paypage').trim();s.payItemId=val('st_payitem').trim();s.payReceiveUrl=val('st_payrecv').trim();s.payReceiveToken=val('st_payrecvtok').trim();s.autoReplyOn=chk('st_arOn');s.autoReplySubj=val('st_arSubj')||AR_SUBJ_DEFAULT;s.autoReplyBody=document.getElementById('st_arBody')?document.getElementById('st_arBody').value:s.autoReplyBody;save();alert('保存しました');}
 function exportAll(){downloadFile('懇親会管理_backup_'+todayISO()+'.json',JSON.stringify(store,null,2));}
 function importAll(input){const f=input.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!d.events)throw 0;d.people=d.people||[];d.venues=d.venues||[];store=d;save();alert('復元しました');go('dashboard');}catch(e){alert('ファイルが不正です');}};r.readAsText(f);}
 function wipe(){if(!confirm('全データを削除します。元に戻せません。よろしいですか？'))return;if(!confirm('本当に削除しますか？'))return;store=defaultStore();save();go('dashboard');}
