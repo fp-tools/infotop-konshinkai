@@ -994,19 +994,71 @@ async function syncMailStatus(eid){
 /* ---------- Tab: 原価・経費 ---------- */
 const COST_CATEGORIES=['会場費','飲食費','備品・印刷','人件費','交通費','その他'];
 function costTotal(e){return (e.costs||[]).reduce((s,c)=>s+(Number(c.amount)||0),0);}
+/* 締め情報（経理報告用の手動入力・イベントごとに保存） */
+function closingInfo(e){e.closingInfo=e.closingInfo||{staffCount:null,itemId:'',feeTotal:null,ringi:null,kariBarai:null,cashCollected:null,dayExpense:null,kariReturn:null};return e.closingInfo;}
+function updClosingInfo(eid,k,v){const ci=closingInfo(getEvent(eid));ci[k]=(k==='itemId')?v:(v===''?null:Number(v)||0);save();render();}
+/* 売上の自動区分: 支払済を「当日現金（受付で現金決済）」と「事前決済（現金以外＝インフォトップ決済等）」に分ける */
+function salesBreakdown(e){
+  const ps=(e.participants||[]).filter(p=>p.status!=='cancel');
+  const paid=ps.filter(p=>p.payStatus==='paid');
+  const cash=paid.filter(p=>p.payMethod==='現金');
+  const pre=paid.filter(p=>p.payMethod!=='現金');
+  const sum=a=>a.reduce((s,p)=>s+(Number(p.amount)||0),0);
+  // 現金分の単価内訳（¥12,000×3 のような表記）
+  const unit={};cash.forEach(p=>{const a=Number(p.amount)||0;unit[a]=(unit[a]||0)+1;});
+  const unitText=Object.keys(unit).sort((a,b)=>b-a).map(a=>yen(a)+'×'+unit[a]+'名').join('、')||'-';
+  return {pre:{count:pre.length,gross:sum(pre)},cash:{count:cash.length,gross:sum(cash),unitText},unpaid:ps.filter(p=>p.payStatus!=='paid'),total:sum(paid)};
+}
+const exTax=n=>{const {pretax}=taxBreakdown(Number(n)||0,10);return pretax;};
+const yenBoth=n=>yen(n)+'（税込）／ '+yen(exTax(n))+'（税抜）';
 function tabCosts(e){
   e.costs=e.costs||[];
-  const ps=(e.participants||[]).filter(p=>p.status!=='cancel');
-  const sales=eventRevenue(e),head=eventHeadcount(e);
-  const paid=ps.filter(p=>p.payStatus==='paid'),unpaid=ps.filter(p=>p.payStatus!=='paid');
-  const paidSum=paid.reduce((s,p)=>s+(Number(p.amount)||0),0),unpaidSum=unpaid.reduce((s,p)=>s+(Number(p.amount)||0),0);
-  const cost=costTotal(e),profit=sales-cost,rate=sales?Math.round(profit/sales*1000)/10:0;
+  const ci=closingInfo(e);
+  const sb=salesBreakdown(e);
+  const head=eventHeadcount(e);
+  const fee=Number(ci.feeTotal)||0;
+  const net=sb.pre.gross-fee; // 事前決済 差引き（当社売上）
+  const salesTotal=sb.pre.gross+sb.cash.gross;
+  const cost=costTotal(e),dayExp=Number(ci.dayExpense)||0,costAll=cost+dayExp;
+  const profit=salesTotal-costAll,rate=salesTotal?Math.round(profit/salesTotal*1000)/10:0;
+  // 仮払い突合: 期待返却額 = 仮払い + 当日回収 − 当日利用
+  const cashCollected=ci.cashCollected!=null?Number(ci.cashCollected):sb.cash.gross;
+  const expectedReturn=(Number(ci.kariBarai)||0)+cashCollected-dayExp;
+  const diff=ci.kariReturn!=null?(Number(ci.kariReturn)-expectedReturn):null;
   let h='<div class="row" style="margin-bottom:14px">'
-    +stat('売上（会費合計）',yen(sales),head+'名・キャンセル除く')
-    +stat('支払済',yen(paidSum),paid.length+'名')
-    +stat('未払い',yen(unpaidSum),unpaid.length+'名')
-    +stat('原価・経費 合計',yen(cost),e.costs.length+'件')
+    +stat('売上合計（支払済）',yen(salesTotal),head+'名中 '+(sb.pre.count+sb.cash.count)+'名 支払済')
+    +stat('事前決済（現金以外）',yen(sb.pre.gross),sb.pre.count+'件')
+    +stat('当日現金回収',yen(sb.cash.gross),sb.cash.count+'件')
+    +stat('原価・経費 合計',yen(costAll),e.costs.length+'件'+(dayExp?'＋当日利用':''))
     +stat('粗利',yen(profit),'粗利率 '+rate+'%')+'</div>';
+  // ① 締め情報（手動入力）
+  h+='<div class="card pad" style="margin-bottom:16px"><b>'+ic('settings',16)+' 締め情報（経理報告用の入力）</b><div class="hint" style="margin:4px 0 12px">報告書に記載される項目です。金額はすべて税込で入力してください（税抜は自動計算）。</div>'
+    +'<div class="row">'
+    +'<label class="fld" style="flex:1;min-width:160px"><span>商品ID（インフォトップ）</span><input value="'+esc(ci.itemId||eventItemIds(e).join(',')||'')+'" onchange="updClosingInfo(\''+e.id+'\',\'itemId\',this.value)"></label>'
+    +'<label class="fld" style="flex:1;min-width:160px"><span>当日参加スタッフ（当社側・人数）</span><input type="number" value="'+(ci.staffCount??'')+'" placeholder="例）5" onchange="updClosingInfo(\''+e.id+'\',\'staffCount\',this.value)"></label>'
+    +'<label class="fld" style="flex:1;min-width:180px"><span>決済手数料（税込）<span class="hint">インフォトップ決済分</span></span><input type="number" value="'+(ci.feeTotal??'')+'" placeholder="例）19800" onchange="updClosingInfo(\''+e.id+'\',\'feeTotal\',this.value)"></label>'
+    +'</div></div>';
+  // ② 売上情報（自動集計）
+  h+='<div class="card pad" style="margin-bottom:16px"><b>'+ic('cash',16)+' 売上情報（自動集計）</b>'
+    +'<table style="margin-top:10px;font-size:13px"><tbody>'
+    +'<tr><td style="color:var(--sub);padding:6px 14px 6px 0;white-space:nowrap">事前決済（インフォトップ決済・現金以外）</td><td><b>'+sb.pre.count+'件</b>　'+yenBoth(sb.pre.gross)+'</td></tr>'
+    +'<tr><td style="color:var(--sub);padding:6px 14px 6px 0">└ 決済手数料</td><td>'+(ci.feeTotal!=null?yenBoth(fee):'<span class="hint">未入力（上の「決済手数料」に入力してください）</span>')+'</td></tr>'
+    +'<tr><td style="color:var(--sub);padding:6px 14px 6px 0">└ 差引き（当社売上）</td><td><b>'+yenBoth(net)+'</b></td></tr>'
+    +'<tr><td style="color:var(--sub);padding:6px 14px 6px 0">当日決済（現地・現金回収）</td><td><b>'+sb.cash.count+'件</b>　'+yenBoth(sb.cash.gross)+'<div class="hint">単価内訳: '+esc(sb.cash.unitText)+'</div></td></tr>'
+    +'<tr style="border-top:2px solid var(--line)"><td style="font-weight:700;padding:8px 14px 6px 0">売上合計</td><td style="font-weight:700">'+yenBoth(salesTotal)+'</td></tr>'
+    +'</tbody></table>'
+    +'<div class="hint" style="margin-top:8px">※「当日現金」は受付メニューで未払いの方に<b>現金</b>決済を選んで受付完了した分の請求額合計です。未払い '+sb.unpaid.length+'名は売上に含まれません。</div></div>';
+  // ③ 現金・仮払い精算
+  h+='<div class="card pad" style="margin-bottom:16px"><b>'+ic('card',16)+' 現金・仮払い精算（おつり用の仮払いとの突合）</b><div class="hint" style="margin:4px 0 12px">経理からおつり用に仮払いを受けた場合に入力します。「当日回収額」は現金売上の自動集計値が初期値です（実際の回収額と異なる場合は上書きしてください）。</div>'
+    +'<div class="row">'
+    +'<label class="fld" style="flex:1;min-width:150px"><span>稟議申請額</span><input type="number" value="'+(ci.ringi??'')+'" onchange="updClosingInfo(\''+e.id+'\',\'ringi\',this.value)"></label>'
+    +'<label class="fld" style="flex:1;min-width:150px"><span>仮払い金額</span><input type="number" value="'+(ci.kariBarai??'')+'" onchange="updClosingInfo(\''+e.id+'\',\'kariBarai\',this.value)"></label>'
+    +'<label class="fld" style="flex:1;min-width:150px"><span>当日回収額（現金売上）</span><input type="number" value="'+(ci.cashCollected??sb.cash.gross)+'" onchange="updClosingInfo(\''+e.id+'\',\'cashCollected\',this.value)"></label>'
+    +'<label class="fld" style="flex:1;min-width:150px"><span>当日利用額（現金経費）</span><input type="number" value="'+(ci.dayExpense??'')+'" placeholder="0" onchange="updClosingInfo(\''+e.id+'\',\'dayExpense\',this.value)"></label>'
+    +'<label class="fld" style="flex:1;min-width:150px"><span>当日仮払いの返却額</span><input type="number" value="'+(ci.kariReturn??'')+'" onchange="updClosingInfo(\''+e.id+'\',\'kariReturn\',this.value)"></label>'
+    +'</div>'
+    +'<div style="font-size:13px;margin-top:4px">照合（仮払い ＋ 当日回収 − 当日利用 ＝ 返却額のはず）: 期待返却額 <b>'+yen(expectedReturn)+'</b>'
+    +(diff===null?'　<span class="hint">返却額を入力すると照合します</span>':diff===0?'　<span class="tag ok">'+ic('check',11)+' 一致</span>':'　<span class="tag danger">不一致（差額 '+yen(diff)+'）</span>')+'</div></div>';
   // 締めステータス
   if(e.closing&&e.closing.at){
     h+='<div class="card pad" style="margin-bottom:16px;background:var(--ok-soft);border-color:#bfe9d3"><b style="color:var(--ok)">'+ic('check',14)+' 締め済み</b> <span class="hint">'+fmtDT(e.closing.at)+' に締め作業を実行し、Chatworkへ報告済み（売上 '+yen(e.closing.sales)+' / 原価 '+yen(e.closing.cost)+' / 粗利 '+yen(e.closing.profit)+'）。数字を修正した場合は「再締め」で再報告できます。</span></div>';
@@ -1034,22 +1086,58 @@ function updCost(eid,cid,k,v){const c=(getEvent(eid).costs||[]).find(x=>x.id===c
 function delCost(eid,cid){const e=getEvent(eid);if(!confirm('この行を削除しますか？'))return;e.costs=(e.costs||[]).filter(x=>x.id!==cid);save();render();}
 /* 経理報告用の売上明細メッセージ（Chatwork記法） */
 function buildClosingMessage(e){
-  const ps=(e.participants||[]).filter(p=>p.status!=='cancel');
-  const sales=eventRevenue(e),head=eventHeadcount(e),att=eventAttended(e);
-  const paid=ps.filter(p=>p.payStatus==='paid'),unpaid=ps.filter(p=>p.payStatus!=='paid');
-  const paidSum=paid.reduce((s,p)=>s+(Number(p.amount)||0),0),unpaidSum=unpaid.reduce((s,p)=>s+(Number(p.amount)||0),0);
-  const cost=costTotal(e),profit=sales-cost,rate=sales?Math.round(profit/sales*1000)/10:0;
+  const ci=closingInfo(e);
+  const sb=salesBreakdown(e);
+  const head=eventHeadcount(e),att=eventAttended(e);
+  const fee=Number(ci.feeTotal)||0;
+  const net=sb.pre.gross-fee;
+  const salesTotal=sb.pre.gross+sb.cash.gross;
+  const cost=costTotal(e),dayExp=Number(ci.dayExpense)||0,costAll=cost+dayExp;
+  const profit=salesTotal-costAll,rate=salesTotal?Math.round(profit/salesTotal*1000)/10:0;
+  const cashCollected=ci.cashCollected!=null?Number(ci.cashCollected):sb.cash.gross;
+  const expectedReturn=(Number(ci.kariBarai)||0)+cashCollected-dayExp;
+  const diff=ci.kariReturn!=null?(Number(ci.kariReturn)-expectedReturn):null;
+  const both=n=>yen(n)+'（税込）／ '+yen(exTax(n))+'（税抜）';
   const byCat={};(e.costs||[]).forEach(c=>{byCat[c.category||'その他']=(byCat[c.category||'その他']||0)+(Number(c.amount)||0);});
-  let m='[info][title]【締め報告】'+ (e.name||'') +'（'+(e.date||'')+'）売上明細[/title]';
-  m+='■ 開催情報\nイベント: '+(e.name||'')+'\n開催日: '+(e.date||'')+'\n会場: '+(e.venue||'-')+'\n参加: '+head+'名（受付済 '+att+'名）\n';
-  m+='[hr]■ 売上\n会費売上 合計: '+yen(sales)+'\n　支払済: '+yen(paidSum)+'（'+paid.length+'名）\n　未払い: '+yen(unpaidSum)+'（'+unpaid.length+'名）\n';
-  m+='[hr]■ 原価・経費（合計 '+yen(cost)+'）\n';
+
+  let m='[info][title]【締め報告】'+(e.name||'')+'（'+(e.date||'')+'）売上明細[/title]';
+  m+='■ 開催情報\n';
+  m+='開催名: '+(e.name||'')+'\n';
+  m+='開催日: '+(e.date||'')+'\n';
+  m+='開催地: '+(e.venue||'-')+'\n';
+  m+='商品ID: '+(ci.itemId||eventItemIds(e).join(',')||'-')+'\n';
+  m+='当日参加スタッフ（当社側）: '+(ci.staffCount!=null?ci.staffCount+'名':'未入力')+'\n';
+  m+='参加者: '+head+'名（受付済 '+att+'名）\n';
+  m+='[hr]■ 売上情報\n';
+  m+='【事前決済（インフォトップ決済・現金以外）】\n';
+  m+='件数: '+sb.pre.count+'件\n';
+  m+='売上: '+both(sb.pre.gross)+'\n';
+  m+='決済手数料: '+(ci.feeTotal!=null?both(fee):'未入力')+'\n';
+  m+='差引き（当社売上）: '+both(net)+'\n';
+  m+='【当日決済（現地・現金回収）】\n';
+  m+='件数: '+sb.cash.count+'件\n';
+  m+='単価内訳: '+sb.cash.unitText+'\n';
+  m+='合計: '+both(sb.cash.gross)+'\n';
+  m+='【売上合計】\n';
+  m+=both(salesTotal)+'\n';
+  m+='[hr]■ 現金・仮払い精算\n';
+  m+='稟議申請額: '+(ci.ringi!=null?yen(ci.ringi):'-')+'\n';
+  m+='仮払い金額: '+(ci.kariBarai!=null?yen(ci.kariBarai):'-')+'\n';
+  m+='当日回収額（現金売上）: '+yen(cashCollected)+'\n';
+  m+='当日利用額（現金経費）: '+yen(dayExp)+'\n';
+  m+='当日仮払いの返却額: '+(ci.kariReturn!=null?yen(ci.kariReturn):'-')+'\n';
+  m+='照合: 期待返却額 '+yen(expectedReturn)+'（仮払い＋当日回収−当日利用） → '+(diff===null?'返却額未入力':diff===0?'一致 ✓':'不一致（差額 '+yen(diff)+'）')+'\n';
+  m+='[hr]■ 原価・経費（合計 '+both(costAll)+(dayExp?'　※当日利用額 '+yen(dayExp)+' を含む':'')+'）\n';
   if((e.costs||[]).length){
     Object.keys(byCat).forEach(k=>{m+='　'+k+': '+yen(byCat[k])+'\n';});
     m+='－内訳－\n';
     (e.costs||[]).forEach(c=>{m+='　・'+(c.name||'(名称未入力)')+'（'+(c.category||'その他')+'）: '+yen(c.amount)+(c.note?'　※'+c.note:'')+'\n';});
   }else m+='　（登録なし）\n';
-  m+='[hr]■ 損益\n粗利: '+yen(profit)+'（粗利率 '+rate+'%）\n';
+  if(dayExp)m+='　・当日利用額（現金経費）: '+yen(dayExp)+'\n';
+  m+='[hr]■ 最終売上（損益）\n';
+  m+='売上合計: '+both(salesTotal)+'\n';
+  m+='原価合計: '+both(costAll)+'\n';
+  m+='粗利: '+both(profit)+'（粗利率 '+rate+'%）\n';
   m+='締め実行: '+new Date().toLocaleString('ja-JP')+'[/info]';
   return m;
 }
@@ -1063,7 +1151,8 @@ async function doClosing(eid){
   const e=getEvent(eid);
   const r=await recendSend({message:buildClosingMessage(e)},'/notify/closing');
   if(r.ok){
-    e.closing={at:new Date().toISOString(),sales:eventRevenue(e),cost:costTotal(e),profit:eventRevenue(e)-costTotal(e)};
+    const sb=salesBreakdown(e),salesTotal=sb.pre.gross+sb.cash.gross,costAll=costTotal(e)+(Number(closingInfo(e).dayExpense)||0);
+    e.closing={at:new Date().toISOString(),sales:salesTotal,cost:costAll,profit:salesTotal-costAll};
     save();closeModal();render();alert('締め報告をChatworkへ送信しました。');
   }else{
     alert('締め報告の送信に失敗しました：'+((r.data&&r.data.error)||r.error||r.status));
