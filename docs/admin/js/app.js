@@ -478,6 +478,7 @@ function editParticipant(eid,pid){
 }
 function saveParticipant(eid,pid){
   const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);const map={name:'pf_name',kana:'pf_kana',company:'pf_company',email:'pf_email',phone:'pf_phone'};
+  const prevEmail=p.email||'',prevGroup=p.groupId||'';
   for(const f in map){const nv=val(map[f]);if(nv!==(p[f]||'')){p[f]=nv;if(p.source==='csv'&&!p.edited.includes(f))p.edited.push(f);}}
   const optV=val('pf_opt');p.feeOptLabel=optV?optV.split('|')[0]:'';
   const amt=Number(val('pf_amount'))||0;if(amt!==p.amount){p.amount=amt;if(p.source==='csv'&&!p.edited.includes('amount'))p.edited.push('amount');}
@@ -485,6 +486,11 @@ function saveParticipant(eid,pid){
   const gv=val('pf_group');if(gv!==(p.groupId||'')){p.groupId=gv;if(p.source==='csv'&&!p.edited.includes('groupId'))p.edited.push('groupId');}
   if(!p.receipt.amount)p.receipt.amount=p.amount;if(!p.receipt.name)p.receipt.name=p.company||p.name;
   if(p.email)ensurePerson(p,e);save();closeModal();render();
+  // 発行済み領収書があり、申込番号かメールが変わった場合は受取人ページ(KV)のレコードを再同期
+  // （受取人ページのログインは「送信時点のメール＋申込番号」で照合されるため）
+  if(p.receipt.no&&((p.groupId||'')!==prevGroup||(p.email||'')!==prevEmail)){
+    pushReceiptRecords(e,[p]).then(()=>alert('申込番号／メールの変更を受取人ページに反映しました。\n新しい情報（メール＋申込番号 '+(p.groupId||'未設定')+'）でログインできます。'));
+  }
 }
 function removeParticipant(eid,pid){if(!confirm('この参加者（お連れ様含む）を削除しますか？'))return;const e=getEvent(eid);e.participants=e.participants.filter(x=>x.id!==pid&&x.companionOf!==pid);save();closeModal();render();}
 function exportParticipants(eid){
