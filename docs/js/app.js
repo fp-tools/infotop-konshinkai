@@ -38,8 +38,10 @@ const ICONS={
 function ic(name,size=16){return '<svg viewBox="0 0 24 24" width="'+size+'" height="'+size+'" style="vertical-align:-3px">'+(ICONS[name]||'')+'</svg>';}
 
 /* ---------- Store ---------- */
+const AR_SUBJ_DEFAULT='【受付QRコード】{{event}} お申込みありがとうございます';
+const AR_BODY_DEFAULT='{{name}} 様\n\nこの度は「{{event}}」にお申込みいただき、誠にありがとうございます。\n当日は受付にて、下記のQRコードをご提示ください。\n\n{{qr}}\n\n▼開催日：{{date}}\n▼会場　：{{venue}}\n▼参加費：{{amount}}\n\n当日お会いできることを楽しみにしております。';
 const defaultStore=()=>({events:[],people:[],venues:[],
-  settings:{recendUrl:'',recendToken:'',companyName:'株式会社インフォトップ',receiptIssuer:'株式会社インフォトップ',companyAddr:'',formApiUrl:'',formApiToken:'',payReceiveUrl:'',payReceiveToken:'',payPageUrl:'',payItemId:''}});
+  settings:{recendUrl:'',recendToken:'',companyName:'株式会社インフォトップ',receiptIssuer:'株式会社インフォトップ',companyAddr:'',formApiUrl:'',formApiToken:'',payReceiveUrl:'',payReceiveToken:'',payPageUrl:'',payItemId:'',autoReplyOn:false,autoReplySubj:AR_SUBJ_DEFAULT,autoReplyBody:AR_BODY_DEFAULT}});
 let store=load();
 function load(){try{const r=JSON.parse(localStorage.getItem(LS_KEY));if(r&&r.events){r.people=r.people||[];r.venues=r.venues||[];r.settings=Object.assign(defaultStore().settings,r.settings||{});return r;}}catch(e){}return defaultStore();}
 function save(){localStorage.setItem(LS_KEY,JSON.stringify(store));renderStoreInfo();}
@@ -158,12 +160,13 @@ function renderEventDetail(v){
   document.getElementById('pageTitle').textContent=e.name||'(無題)';
   document.getElementById('crumb').textContent=(e.date||'')+'　'+(e.venue||'');
   document.getElementById('topActions').innerHTML='<button class="btn sm" onclick="openEventForm(\''+e.id+'\')">'+ic('settings',14)+' 開催設定</button> <button class="btn sm danger" onclick="delEvent(\''+e.id+'\')">削除</button>';
-  const tabs=[['participants','参加者リスト'],['reception','受付（出欠）'],['mail','メール・領収書'],['tasks','タスク（ガント）'],['memo','情報共有メモ']];
+  const tabs=[['participants','参加者リスト'],['reception','受付（出欠）'],['mail','メール・領収書'],['maillog','メール履歴'],['tasks','タスク（ガント）'],['memo','情報共有メモ']];
   let h='<div class="tabs">'+tabs.map(t=>'<button class="'+(route.tab===t[0]?'active':'')+'" onclick="go(\'event\',\''+e.id+'\',\''+t[0]+'\')">'+t[1]+'</button>').join('')+'</div><div id="tabBody"></div>';
   v.innerHTML=h;const b=document.getElementById('tabBody');
   if(route.tab==='participants')b.innerHTML=tabParticipants(e);
   else if(route.tab==='reception')b.innerHTML=tabReception(e);
   else if(route.tab==='mail')b.innerHTML=tabMail(e);
+  else if(route.tab==='maillog')b.innerHTML=tabMailLog(e);
   else if(route.tab==='tasks')renderTasks(e,b);
   else if(route.tab==='memo')renderMemo(e,b);
 }
@@ -256,7 +259,28 @@ async function importFromApi(eid){
   _csvStaging={eid,recs};const e=getEvent(eid);let nw=0,upd=0;
   recs.forEach(r=>{const m=r.email&&(e.participants||[]).find(p=>normEmail(p.email)===normEmail(r.email));if(m)upd++;else nw++;});
   if(!confirm('フォームAPIから '+recs.length+'件 取得しました。\n新規 '+nw+' / 既存一致 '+upd+'（編集項目は保持）。取り込みますか？'))return;
+  const before=new Set((e.participants||[]).map(p=>p.id));
   applyImport();
+  const newIds=(getEvent(eid).participants||[]).filter(p=>!before.has(p.id)).map(p=>p.id);
+  if(newIds.length)setTimeout(()=>autoReplyNew(eid,newIds),400);
+}
+/* フォームAPI取込で新規追加された参加者へ、受付QRコード付きHTMLメールを自動返信する */
+async function autoReplyNew(eid,newIds){
+  const s=store.settings;if(!s.autoReplyOn)return;
+  const e=getEvent(eid);if(!e)return;
+  const targets=(e.participants||[]).filter(p=>newIds.includes(p.id)&&p.email&&p.status!=='cancel');
+  if(!targets.length)return;
+  if(!s.recendUrl){alert('自動返信メールがONですが、recend（Worker）が未設定のため送信できません。設定画面をご確認ください。');return;}
+  if(!confirm('【自動返信】新規取込 '+targets.length+'名へ、受付QRコード付きメールを送信します。よろしいですか？'))return;
+  const subj=s.autoReplySubj||AR_SUBJ_DEFAULT,body=s.autoReplyBody||AR_BODY_DEFAULT;
+  const recsM=targets.map(p=>({p,mid:uid()}));
+  const messages=recsM.map(({p,mid})=>({to:p.email,subject:mergeBody(subj,e,p),body:mergeText(body,e,p),html:mergeBodyHTML(body,e,p,mid)}));
+  const r=await recendSend({type:'reminder',event:{name:e.name,date:e.date,venue:e.venue},messages});
+  if(r.ok){
+    const res=(r.data&&r.data.results)||[];
+    logMail(e,{kind:'自動返信（QR）',subject:subj,body,count:targets.length,status:'sent',recipients:recsM.map(({p,mid},i)=>({to:p.email,name:p.name,pid:p.id,mid,ok:res[i]?!!res[i].ok:true}))});
+    render();alert('自動返信メールを '+targets.length+'件 送信しました（QRコード付き）。');
+  }else alert('自動返信メールの送信に失敗しました：'+(r.error||r.status)+(r.data&&r.data.error?'\n'+r.data.error:''));
 }
 async function syncPayments(eid){
   const s=store.settings;if(!s.payReceiveUrl){alert('設定で「決済受信エンドポイント」を登録してください。\nインフォトップ購入者情報送信API(Webhook)を受けるサーバ側のURLです。');go('settings');return;}
@@ -421,7 +445,9 @@ function undoCheckin(eid,pid){const p=getEvent(eid).participants.find(x=>x.id===
 /* ---------- QR scan reception ---------- */
 let _scan={stream:null,raf:null,active:false};
 function receptionScan(eid){
-  modal('QR受付スキャン','<div style="text-align:center"><div style="position:relative;background:#000;border-radius:12px;overflow:hidden;max-width:360px;margin:0 auto;aspect-ratio:4/3"><video id="scanVideo" playsinline style="width:100%;height:100%;object-fit:cover"></video><div style="position:absolute;inset:18%;border:3px solid rgba(255,255,255,.8);border-radius:12px;pointer-events:none"></div></div><canvas id="scanCanvas" style="display:none"></canvas><div id="scanMsg" class="hint" style="margin-top:10px">カメラを起動しています…</div></div><div class="divider"></div><div><b style="font-size:13px">QRが読めない場合：氏名で検索して受付</b><input id="scanSearch" placeholder="氏名・会社で検索" style="margin-top:8px" oninput="scanManualList(\''+eid+'\',this.value)"><div id="scanList" style="max-height:180px;overflow:auto;margin-top:6px"></div></div>',[{label:'閉じる',cls:'btn',on:'stopScan();closeModal()'}],460);
+  modal('QR受付スキャン','<div style="text-align:center"><div style="position:relative;background:#000;border-radius:12px;overflow:hidden;max-width:360px;margin:0 auto;aspect-ratio:4/3"><video id="scanVideo" playsinline style="width:100%;height:100%;object-fit:cover"></video><div style="position:absolute;inset:18%;border:3px solid rgba(255,255,255,.8);border-radius:12px;pointer-events:none"></div></div><canvas id="scanCanvas" style="display:none"></canvas><div id="scanMsg" class="hint" style="margin-top:10px">カメラを起動しています…</div></div>'
+    +'<div class="divider"></div><div class="between"><b style="font-size:13px">QR画像から読み取り <span class="hint">（メールのQRのスクリーンショット・写真でもOK）</span></b><label class="btn sm" style="margin:0">'+ic('upload',13)+' 画像を選択<input type="file" accept="image/*" style="display:none" onchange="scanFromImage(\''+eid+'\',this)"></label></div>'
+    +'<div class="divider"></div><div><b style="font-size:13px">QRが読めない場合：氏名で検索して受付</b><input id="scanSearch" placeholder="氏名・会社で検索" style="margin-top:8px" oninput="scanManualList(\''+eid+'\',this.value)"><div id="scanList" style="max-height:180px;overflow:auto;margin-top:6px"></div></div>',[{label:'閉じる',cls:'btn',on:'stopScan();closeModal()'}],460);
   startScan(eid);
 }
 async function startScan(eid){
@@ -439,6 +465,35 @@ async function startScan(eid){
   }catch(err){msg.innerHTML='カメラを起動できませんでした（'+esc(String(err.name||err))+'）。<br>※file://では使えません。httpsまたはlocalhostで開くか、氏名検索で受付してください。';}
 }
 function stopScan(){_scan.active=false;if(_scan.raf)cancelAnimationFrame(_scan.raf);if(_scan.stream){_scan.stream.getTracks().forEach(t=>t.stop());_scan.stream=null;}}
+/* カメラが使えない環境（file://・権限なし等）や、メールで届いたQR画像のスクリーンショット/写真からの受付用 */
+function scanFromImage(eid,input){
+  const f=input.files&&input.files[0];if(!f)return;input.value='';
+  const msg=document.getElementById('scanMsg');
+  const say=t=>{if(msg)msg.textContent=t;};
+  if(typeof jsQR==='undefined'){say('QR読取ライブラリが読み込めません。氏名検索で受付してください。');return;}
+  const img=new Image();
+  img.onload=()=>{
+    URL.revokeObjectURL(img.src);
+    // 解像度を変えながら数回試行（大きすぎ/小さすぎで読めないケースへの対策）
+    const widths=[Math.min(img.naturalWidth,1600),800,Math.min(img.naturalWidth,2400)];
+    for(const w0 of widths){
+      const w=Math.max(1,Math.round(w0)),h=Math.max(1,Math.round(img.naturalHeight*(w/img.naturalWidth)));
+      const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+      const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0,w,h);
+      let code=null;
+      try{const d=ctx.getImageData(0,0,w,h);code=jsQR(d.data,w,h);}catch(err){}
+      if(code){
+        const tk=parseToken(code.data);
+        if(tk&&tk.eventId===eid){stopScan();receptionConfirm(eid,tk.pid,true);return;}
+        if(tk){say('別のイベントの受付QRコードです。開催をお確かめください。');return;}
+        say('QRは検出しましたが、このシステムの受付用QRではありません。');return;
+      }
+    }
+    say('画像からQRコードを検出できませんでした。QR部分が大きく鮮明に写った画像でお試しください。');
+  };
+  img.onerror=()=>{say('画像を読み込めませんでした。');};
+  img.src=URL.createObjectURL(f);
+}
 function scanManualList(eid,q){const e=getEvent(eid);q=(q||'').toLowerCase();const list=(e.participants||[]).filter(p=>p.status!=='cancel'&&((p.name||'')+(p.company||'')+(p.kana||'')).toLowerCase().includes(q)).slice(0,20);document.getElementById('scanList').innerHTML=q?(list.map(p=>'<div class="between" style="padding:7px 4px;border-bottom:1px solid var(--line)"><div><b>'+esc(p.name)+'</b> <span class="hint">'+esc(p.company)+'</span> '+payBadge(p)+'</div><button class="btn sm primary" onclick="stopScan();receptionConfirm(\''+eid+'\',\''+p.id+'\',true)">受付</button></div>').join('')||'<div class="hint" style="padding:8px">該当なし</div>'):'';}
 let _payMethod='cash';
 function receptionConfirm(eid,pid,fromScan){
@@ -487,8 +542,8 @@ function tabMail(e){
   let h='<div class="banner">メール送信は <b>recend</b> 経由で行います。'+(recend?'接続先：<code>'+esc(recend)+'</code>':'未設定（<a href="javascript:go(\'settings\')">設定</a>でrecendのURL/トークンを登録）。未設定時はプレビュー＆コピー／mailtoで代替します。')+'</div>';
   h+='<div class="card pad" style="margin-bottom:16px"><div class="between" style="margin-bottom:10px"><b>'+ic('mail',16)+' リマインドメール</b><span class="hint">'+ps.filter(p=>p.email).length+'名 / 宛先あり</span></div>'
     +'<label class="fld"><span>件名</span><input id="rm_subj" value="【リマインド】'+esc(e.name)+' 開催のご案内"></label>'
-    +'<label class="fld"><span>本文 <span class="hint">差込：{{name}} {{date}} {{venue}} {{amount}}</span></span><textarea id="rm_body" rows="7">{{name}} 様\n\nいつもお世話になっております。インフォトップ事務局です。\n下記の通り「'+esc(e.name)+'」を開催いたします。お気をつけてお越しください。\n\n▼開催日：'+esc(e.date)+'\n▼会場　：'+esc(e.venue)+'\n▼参加費：{{amount}}\n\n当日お会いできることを楽しみにしております。</textarea></label>'
-    +'<div class="flex"><button class="btn primary" onclick="sendReminders(\''+e.id+'\')">recendで一斉送信</button><button class="btn" onclick="previewReminder(\''+e.id+'\')">プレビュー</button></div>'
+    +'<label class="fld"><span>本文 <span class="hint">差込：{{name}} {{event}} {{date}} {{venue}} {{amount}} {{qr}}（QRコードはHTMLメールで画像表示されます）</span></span><textarea id="rm_body" rows="9">{{name}} 様\n\nいつもお世話になっております。インフォトップ事務局です。\n下記の通り「'+esc(e.name)+'」を開催いたします。お気をつけてお越しください。\n\n▼開催日：'+esc(e.date)+'\n▼会場　：'+esc(e.venue)+'\n▼参加費：{{amount}}\n\n当日は受付にて、下記のQRコードをご提示ください。\n\n{{qr}}\n\n当日お会いできることを楽しみにしております。</textarea></label>'
+    +'<div class="row" style="align-items:flex-end;margin-bottom:4px"><label class="fld" style="flex:0 0 240px;margin-bottom:8px"><span>予約配信日時（空欄なら即時送信）</span><input id="rm_when" type="datetime-local"></label><div class="flex" style="margin-bottom:8px"><button class="btn primary" onclick="sendReminders(\''+e.id+'\')">recendで一斉送信 / 予約</button><button class="btn" onclick="previewReminder(\''+e.id+'\')">プレビュー</button><button class="btn" onclick="showScheduled(\''+e.id+'\')">'+ic('calendar',14)+' 予約一覧</button></div></div>'
     +'<div class="divider"></div>'
     +'<div class="fld"><span>テスト送信 <span class="hint">上記の件名・本文をこのアドレス宛に1通だけ送ります（参加者には送信されません）</span></span>'
     +'<div class="flex"><input id="rm_test_to" type="email" placeholder="test@example.com" style="max-width:280px"><button class="btn" onclick="sendTestReminder(\''+e.id+'\')">テスト送信</button></div></div></div>';
@@ -512,24 +567,75 @@ function autoGroupReceipts(eid){
 function receiptHTML(e,p){const s=store.settings,no='R'+(e.date||'').replace(/-/g,'')+'-'+p.id.slice(-4).toUpperCase();
   return '<div style="font-family:serif;padding:30px;border:2px solid #333;max-width:520px;margin:auto;color:#111"><div style="text-align:center;font-size:22px;letter-spacing:.4em;font-weight:bold;border-bottom:2px solid #333;padding-bottom:8px">領　収　書</div><div style="text-align:right;font-size:12px;margin-top:8px">No. '+no+'　発行日 '+esc(todayISO())+'</div><div style="font-size:18px;margin:18px 0 6px"><u>　'+esc(p.receipt.name||p.company||p.name)+'　</u> 様</div><div style="text-align:center;font-size:28px;font-weight:bold;border-top:1px solid #333;border-bottom:1px solid #333;padding:10px 0;margin:10px 0">金 '+yen(p.receipt.amount??p.amount)+' 也</div><div style="font-size:14px">但し、<b>'+esc(p.receipt.note||'参加費として')+'</b>　上記正に領収いたしました。</div><div style="margin-top:8px;font-size:13px">対象：'+esc(e.name)+'（'+esc(e.date)+'）'+(p.payMethod?'／'+esc(p.payMethod)+'決済':'')+'</div><div style="text-align:right;margin-top:24px;font-size:13px;line-height:1.8">'+esc(s.receiptIssuer||s.companyName)+'<br>'+esc(s.companyAddr||'')+'</div></div>';}
 function previewReceipt(eid,pid){const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);modal('領収書プレビュー',receiptHTML(e,p),[{label:'閉じる',cls:'btn',on:'closeModal()'},{label:'印刷',cls:'btn',on:'printNode()'},{label:'発行・送信',cls:'btn primary',on:"sendReceipt('"+eid+"','"+pid+"')"}],600);}
-function previewReminder(eid){const e=getEvent(eid),p=(e.participants||[]).find(x=>x.status!=='cancel')||newParticipant();modal('リマインド プレビュー（1人目）','<div class="card pad" style="white-space:pre-wrap;font-size:13px">件名：'+esc(mergeBody(val('rm_subj'),e,p))+'\n\n'+esc(mergeBody(document.getElementById('rm_body').value,e,p))+'</div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],600);}
-function mergeBody(t,e,p){return String(t).replace(/{{name}}/g,p.name||'ご参加者').replace(/{{date}}/g,e.date||'').replace(/{{venue}}/g,e.venue||'').replace(/{{amount}}/g,yen(p.amount??e.fee));}
-async function recendSend(payload){const s=store.settings;if(!s.recendUrl)return {ok:false,fallback:true};try{const res=await fetch(s.recendUrl,{method:'POST',headers:{'Content-Type':'application/json',...(s.recendToken?{'Authorization':'Bearer '+s.recendToken}:{})},body:JSON.stringify(payload)});return {ok:res.ok,status:res.status};}catch(err){return {ok:false,error:String(err)};}}
+function previewReminder(eid){const e=getEvent(eid),p=(e.participants||[]).find(x=>x.status!=='cancel')||newParticipant();modal('リマインド プレビュー（1人目・HTMLメール表示）','<div class="card pad" style="font-size:13px"><div style="margin-bottom:10px"><b>件名：</b>'+esc(mergeBody(val('rm_subj'),e,p))+'</div><div class="divider"></div>'+mergeBodyHTML(document.getElementById('rm_body').value,e,p,'')+'</div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],640);}
+function mergeBody(t,e,p){return String(t).replace(/{{name}}/g,p.name||'ご参加者').replace(/{{event}}/g,e.name||'').replace(/{{date}}/g,e.date||'').replace(/{{venue}}/g,e.venue||'').replace(/{{amount}}/g,yen(p.amount??e.fee));}
+/* QRコード画像URL（メール埋め込み用。メールではJS実行不可のため外部QR画像APIを使用） */
+function qrImgUrl(text,size){return 'https://api.qrserver.com/v1/create-qr-code/?size='+size+'x'+size+'&qzone=2&data='+encodeURIComponent(text);}
+function workerBase(){return (store.settings.recendUrl||'').replace(/\/+$/,'');}
+/* テキスト版本文: {{qr}} は画像を出せないため案内文に置換 */
+function mergeText(t,e,p){return mergeBody(t,e,p).replace(/{{qr}}/g,'（受付用QRコードはHTMLメールでご覧いただけます）');}
+/* HTML版本文: 差込タグ反映 → エスケープ → 改行→<br> → {{qr}}をQR画像に → 開封計測ピクセル付与 */
+function mergeBodyHTML(t,e,p,mid){
+  let html=esc(mergeBody(t,e,p)).replace(/\n/g,'<br>');
+  html=html.replace(/{{qr}}/g,'</p><div style="text-align:center;margin:16px 0"><img src="'+qrImgUrl(qrToken(e,p),220)+'" width="220" height="220" alt="受付QRコード" style="display:inline-block;border:1px solid #e4e8ef;border-radius:8px"><div style="font-size:12px;color:#6b7686;margin-top:6px">受付QRコード（当日受付でご提示ください）</div></div><p style="margin:0">');
+  let out='<div style="font-family:\'Hiragino Kaku Gothic ProN\',\'Yu Gothic\',Meiryo,sans-serif;font-size:14px;line-height:1.9;color:#1f2733"><p style="margin:0">'+html+'</p></div>';
+  if(mid&&workerBase())out+='<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">';
+  return out;
+}
+/* イベント別メール送信履歴に1件記録する */
+function logMail(e,entry){e.mailLog=e.mailLog||[];e.mailLog.unshift(Object.assign({id:uid(),at:new Date().toISOString()},entry));save();}
+function fmtDT(iso){if(!iso)return '-';const d=new Date(iso);return isNaN(d)?'-':d.toLocaleString('ja-JP',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
+async function recendSend(payload,path='',method='POST'){const s=store.settings;if(!s.recendUrl)return {ok:false,fallback:true};try{const res=await fetch(workerBase()+path,{method,headers:{'Content-Type':'application/json',...(s.recendToken?{'Authorization':'Bearer '+s.recendToken}:{})},body:payload!=null?JSON.stringify(payload):undefined});let j=null;try{j=await res.json();}catch(e2){}return {ok:res.ok,status:res.status,data:j};}catch(err){return {ok:false,error:String(err)};}}
 async function sendReminders(eid){
   const e=getEvent(eid),subj=val('rm_subj'),body=document.getElementById('rm_body').value;
   const targets=(e.participants||[]).filter(p=>p.status!=='cancel'&&p.email);if(!targets.length){alert('送信先メールアドレスがありません。');return;}
+  const recs=targets.map(p=>({p,mid:uid()}));
+  const messages=recs.map(({p,mid})=>({to:p.email,subject:mergeBody(subj,e,p),body:mergeText(body,e,p),html:mergeBodyHTML(body,e,p,mid)}));
+  const when=val('rm_when');
+  if(when){ /* 予約配信 */
+    const sendAt=new Date(when);
+    if(!(sendAt>new Date())){alert('予約日時には未来の日時を指定してください。');return;}
+    if(!store.settings.recendUrl){alert('予約配信にはrecend（Worker）の設定が必要です。設定画面でURLとトークンを登録してください。');return;}
+    if(!confirm(targets.length+'名へのリマインドを\n'+sendAt.toLocaleString('ja-JP')+' に予約配信します。よろしいですか？\n（Worker側のCron実行タイミングにより最大5分程度遅れます）'))return;
+    const r=await recendSend({sendAt:sendAt.toISOString(),eventId:e.id,eventName:e.name,subject:mergeBody(subj,e,targets[0]),payload:{type:'reminder',event:{name:e.name,date:e.date,venue:e.venue},messages}},'/schedule');
+    if(r.ok&&r.data&&r.data.id){
+      logMail(e,{kind:'リマインド（予約）',subject:subj,body,count:targets.length,status:'scheduled',scheduledFor:sendAt.toISOString(),jobId:r.data.id,recipients:recs.map(({p,mid})=>({to:p.email,name:p.name,pid:p.id,mid,ok:null}))});
+      render();alert('予約しました：'+sendAt.toLocaleString('ja-JP')+'\n予約状況は「メール履歴」タブと「予約一覧」で確認できます。');
+    }else alert('予約に失敗しました：'+(r.error||r.status||'')+(r.data&&r.data.error?'\n'+r.data.error:''));
+    return;
+  }
   if(!confirm(targets.length+'名にリマインドを送信します。よろしいですか？'))return;
-  const payload={type:'reminder',event:{name:e.name,date:e.date,venue:e.venue},messages:targets.map(p=>({to:p.email,subject:mergeBody(subj,e,p),body:mergeBody(body,e,p)}))};
+  const payload={type:'reminder',event:{name:e.name,date:e.date,venue:e.venue},messages};
   const r=await recendSend(payload);
-  if(r.ok)alert('recend経由で'+targets.length+'件送信しました。');
-  else if(r.fallback){copyToClipboard(payload.messages.map(m=>'To: '+m.to+'\nSub: '+m.subject+'\n'+m.body+'\n---').join('\n'));alert('recend未設定のため、送信内容をクリップボードにコピーしました。設定でrecendのURLを登録すると一斉送信できます。');}
+  if(r.ok){
+    const res=(r.data&&r.data.results)||[];
+    logMail(e,{kind:'リマインド',subject:subj,body,count:targets.length,status:'sent',recipients:recs.map(({p,mid},i)=>({to:p.email,name:p.name,pid:p.id,mid,ok:res[i]?!!res[i].ok:true}))});
+    render();alert('recend経由で'+targets.length+'件送信しました。');
+  }
+  else if(r.fallback){copyToClipboard(messages.map(m=>'To: '+m.to+'\nSub: '+m.subject+'\n'+m.body+'\n---').join('\n'));alert('recend未設定のため、送信内容をクリップボードにコピーしました。設定でrecendのURLを登録すると一斉送信できます。');}
   else alert('送信に失敗しました：'+(r.error||r.status));
+}
+async function showScheduled(eid){
+  const r=await recendSend(null,'/schedule','GET');
+  if(!r.ok){alert('予約一覧の取得に失敗しました：'+(r.error||r.status)+(r.data&&r.data.error?'\n'+r.data.error:''));return;}
+  const jobs=((r.data&&r.data.jobs)||[]).filter(j=>j.eventId===eid).sort((a,b)=>(b.sendAt||'').localeCompare(a.sendAt||''));
+  const st=j=>j.status==='pending'?'<span class="tag warn">予約中</span>':j.status==='sent'?'<span class="tag ok">送信済</span>':j.status==='canceled'?'<span class="tag gray">取消済</span>':j.status==='sending'?'<span class="tag brand">送信中</span>':'<span class="tag danger">失敗</span>';
+  const body=jobs.length?'<div style="overflow:auto"><table><thead><tr><th>配信予定</th><th>件名</th><th>宛先数</th><th>状態</th><th></th></tr></thead><tbody>'
+    +jobs.map(j=>'<tr><td>'+fmtDT(j.sendAt)+'</td><td>'+esc(j.subject||'')+'</td><td>'+(j.count||0)+'名</td><td>'+st(j)+(j.sentAt?'<div class="hint">'+fmtDT(j.sentAt)+'</div>':'')+'</td><td>'+(j.status==='pending'?'<button class="btn sm danger" onclick="cancelScheduled(\''+j.id+'\',\''+eid+'\')">取消</button>':'')+'</td></tr>').join('')
+    +'</tbody></table></div>':'<div class="hint" style="padding:12px">このイベントの予約配信はありません。</div>';
+  modal('予約配信 一覧',body,[{label:'閉じる',cls:'btn',on:'closeModal()'}],640);
+}
+async function cancelScheduled(id,eid){
+  if(!confirm('この予約配信を取り消しますか？'))return;
+  const r=await recendSend(null,'/schedule?id='+encodeURIComponent(id),'DELETE');
+  if(r.ok){const e=getEvent(eid);const L=(e.mailLog||[]).find(x=>x.jobId===id);if(L)L.status='canceled';save();closeModal();showScheduled(eid);}
+  else alert('取消に失敗しました：'+(r.error||r.status)+(r.data&&r.data.error?'\n'+r.data.error:''));
 }
 async function sendTestReminder(eid){
   const e=getEvent(eid),subj=val('rm_subj'),body=document.getElementById('rm_body').value,to=val('rm_test_to').trim();
   if(!to){alert('テスト送信先アドレスを入力してください。');return;}
   const p=(e.participants||[]).find(x=>x.status!=='cancel')||newParticipant({name:'テスト太郎'});
-  const payload={type:'reminder',event:{name:e.name,date:e.date,venue:e.venue},messages:[{to,subject:mergeBody(subj,e,p),body:mergeBody(body,e,p)}]};
+  const payload={type:'reminder',event:{name:e.name,date:e.date,venue:e.venue},messages:[{to,subject:mergeBody(subj,e,p),body:mergeText(body,e,p),html:mergeBodyHTML(body,e,p,'')}]};
   const r=await recendSend(payload);
   if(r.ok)alert('テスト送信しました：'+to);
   else if(r.fallback){copyToClipboard('To: '+payload.messages[0].to+'\nSub: '+payload.messages[0].subject+'\n'+payload.messages[0].body);alert('recend未設定のため、送信内容をクリップボードにコピーしました。');}
@@ -538,9 +644,10 @@ async function sendTestReminder(eid){
 async function sendReceipt(eid,pid){
   const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);
   if(!p.email){if(!confirm('送信先メールアドレスが未登録です。発行済みフラグだけ立てますか？'))return;p.receipt.issued=true;p.receipt.issuedAt=new Date().toISOString();save();render();return;}
-  const payload={type:'receipt',to:p.email,event:{name:e.name,date:e.date},receipt:{name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'参加費として'},html:receiptHTML(e,p)};
+  const mid=uid();
+  const payload={type:'receipt',to:p.email,event:{name:e.name,date:e.date},receipt:{name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'参加費として'},html:receiptHTML(e,p)+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')};
   const r=await recendSend(payload);p.receipt.issued=true;p.receipt.issuedAt=new Date().toISOString();
-  if(r.ok){p.receipt.sentAt=new Date().toISOString();save();closeModal();render();alert('領収書をrecend経由で送信しました。');}
+  if(r.ok){p.receipt.sentAt=new Date().toISOString();logMail(e,{kind:'領収書',subject:'【領収書】'+e.name,body:'（領収書HTML）宛名:'+(p.receipt.name||p.company||p.name)+' / 金額:'+yen(p.receipt.amount??p.amount),count:1,status:'sent',recipients:[{to:p.email,name:p.name,pid:p.id,mid,ok:true}]});closeModal();render();alert('領収書をrecend経由で送信しました。');}
   else if(r.fallback){const sub='【領収書】'+e.name,bd=p.receipt.name+' 様\n\n領収書を発行いたしました。金額：'+yen(p.receipt.amount??p.amount)+'\n但し：'+p.receipt.note;window.open('mailto:'+encodeURIComponent(p.email)+'?subject='+encodeURIComponent(sub)+'&body='+encodeURIComponent(bd));save();closeModal();render();}
   else alert('送信失敗：'+(r.error||r.status));
 }
@@ -548,11 +655,74 @@ async function sendAllReceipts(eid){
   const e=getEvent(eid),targets=(e.participants||[]).filter(p=>p.status!=='cancel'&&p.email&&!p.receipt.sentAt&&(p.receipt.amount??p.amount)>0);
   if(!targets.length){alert('送信対象（未送信・金額あり）がありません。');return;}
   if(!confirm(targets.length+'名に領収書を発行・送信します。'))return;
-  const payload={type:'receipt_batch',event:{name:e.name,date:e.date},items:targets.map(p=>({to:p.email,name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'参加費として',html:receiptHTML(e,p)}))};
+  const recs=targets.map(p=>({p,mid:uid()}));
+  const payload={type:'receipt_batch',event:{name:e.name,date:e.date},items:recs.map(({p,mid})=>({to:p.email,name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'参加費として',html:receiptHTML(e,p)+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')}))};
   const r=await recendSend(payload),now=new Date().toISOString();
-  if(r.ok){targets.forEach(p=>{p.receipt.issued=true;p.receipt.issuedAt=now;p.receipt.sentAt=now;});save();render();alert(targets.length+'件の領収書を送信しました。');}
+  if(r.ok){targets.forEach(p=>{p.receipt.issued=true;p.receipt.issuedAt=now;p.receipt.sentAt=now;});const res=(r.data&&r.data.results)||[];logMail(e,{kind:'領収書（一括）',subject:'【領収書】'+e.name,body:'（領収書HTML・一括発行）',count:targets.length,status:'sent',recipients:recs.map(({p,mid},i)=>({to:p.email,name:p.name,pid:p.id,mid,ok:res[i]?!!res[i].ok:true}))});render();alert(targets.length+'件の領収書を送信しました。');}
   else if(r.fallback){copyToClipboard(payload.items.map(it=>'To:'+it.to+' / '+it.name+' / '+yen(it.amount)+' / '+it.note).join('\n'));targets.forEach(p=>{p.receipt.issued=true;p.receipt.issuedAt=now;});save();render();alert('recend未設定のため一覧をコピーしました（発行済みにしました）。');}
   else alert('送信失敗：'+(r.error||r.status));
+}
+
+/* ---------- Tab: メール履歴 ---------- */
+function mailStatusTag(L){
+  if(L.status==='scheduled')return '<span class="tag warn">予約中</span>';
+  if(L.status==='sent')return '<span class="tag ok">送信済</span>';
+  if(L.status==='canceled')return '<span class="tag gray">取消済</span>';
+  if(L.status==='error')return '<span class="tag danger">失敗</span>';
+  return '<span class="tag gray">'+esc(L.status||'-')+'</span>';
+}
+function tabMailLog(e){
+  const logs=e.mailLog||[];
+  let h='<div class="between" style="margin-bottom:12px"><b>メール送信履歴（'+logs.length+'件）</b><button class="btn sm" onclick="syncMailStatus(\''+e.id+'\')">'+ic('sync',14)+' 開封・予約状況を同期</button></div>';
+  h+='<div class="banner">開封は本文内のトラッキング画像の読み込みで計測します。<b>受信側がメール内の画像を表示しない設定の場合、開封してもカウントされません</b>（実際の開封数は表示以上の場合があります）。「同期」ボタンで最新の開封状況・予約配信の実行結果を取得します。</div>';
+  if(!logs.length)return h+emptyState(ic('mail',40),'履歴がありません','リマインド・領収書・自動返信を送信すると、ここに記録されます。','');
+  h+='<div class="card" style="overflow:auto"><table><thead><tr><th>日時</th><th>種別</th><th>件名</th><th>宛先</th><th>状態</th><th>開封</th><th></th></tr></thead><tbody>';
+  logs.forEach(L=>{
+    const opened=(L.recipients||[]).filter(r=>r.openCount).length;
+    const rate=L.count?Math.round(opened/L.count*100):0;
+    const fails=(L.recipients||[]).filter(r=>r.ok===false).length;
+    h+='<tr><td>'+fmtDT(L.at)+(L.scheduledFor?'<div class="hint">配信予定 '+fmtDT(L.scheduledFor)+'</div>':'')+'</td>'
+      +'<td>'+esc(L.kind)+'</td><td>'+esc(L.subject)+'</td>'
+      +'<td><b>'+(L.count||0)+'</b>名'+(fails?'<div class="hint" style="color:var(--danger)">失敗 '+fails+'件</div>':'')+'</td>'
+      +'<td>'+mailStatusTag(L)+'</td>'
+      +'<td>'+(L.status==='sent'?(opened?'<b>'+opened+'</b> / '+L.count+'名（'+rate+'%）':'<span class="hint">0 / '+L.count+'名</span>'):'<span class="hint">-</span>')+'</td>'
+      +'<td><button class="btn sm" onclick="showMailLogDetail(\''+e.id+'\',\''+L.id+'\')">詳細</button></td></tr>';
+  });
+  return h+'</tbody></table></div>';
+}
+function showMailLogDetail(eid,logId){
+  const e=getEvent(eid),L=(e.mailLog||[]).find(x=>x.id===logId);if(!L)return;
+  const opened=(L.recipients||[]).filter(r=>r.openCount).length;
+  let h='<div class="kv" style="margin-bottom:12px;font-size:13px"><div><b>種別</b>'+esc(L.kind)+'</div><div><b>状態</b>'+mailStatusTag(L)+'</div><div><b>送信日時</b>'+fmtDT(L.at)+'</div>'+(L.scheduledFor?'<div><b>配信予定</b>'+fmtDT(L.scheduledFor)+'</div>':'')+'<div><b>宛先数</b>'+(L.count||0)+'名</div>'+(L.status==='sent'?'<div><b>開封</b>'+opened+' / '+(L.count||0)+'名（'+(L.count?Math.round(opened/L.count*100):0)+'%）</div>':'')+'</div>';
+  h+='<div class="card pad" style="margin-bottom:12px"><b style="font-size:12.5px">件名</b><div style="margin:4px 0 10px">'+esc(L.subject)+'</div><b style="font-size:12.5px">本文</b><div style="white-space:pre-wrap;font-size:12.5px;color:var(--sub);max-height:160px;overflow:auto;margin-top:4px">'+esc(L.body||'')+'</div></div>';
+  h+='<b style="font-size:13px">宛先別の状況（'+(L.recipients||[]).length+'名）</b><div class="card" style="overflow:auto;max-height:280px;margin-top:6px"><table><thead><tr><th>氏名</th><th>アドレス</th><th>送信</th><th>開封</th></tr></thead><tbody>';
+  (L.recipients||[]).forEach(rc=>{
+    h+='<tr><td>'+esc(rc.name||'-')+'</td><td>'+esc(rc.to)+'</td>'
+      +'<td>'+(rc.ok===true?'<span class="tag ok">OK</span>':rc.ok===false?'<span class="tag danger">失敗</span>':'<span class="tag gray">待機</span>')+'</td>'
+      +'<td>'+(rc.openCount?'<span class="tag brand">開封済 '+rc.openCount+'回</span><div class="hint">初回 '+fmtDT(rc.openedAt)+'</div>':'<span class="hint">未開封</span>')+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  modal('メール詳細 - '+esc(L.kind),h,[{label:'閉じる',cls:'btn',on:'closeModal()'}],680);
+}
+async function syncMailStatus(eid){
+  const e=getEvent(eid),logs=e.mailLog||[];
+  if(!store.settings.recendUrl){alert('recend（Worker）が未設定です。設定画面でURLとトークンを登録してください。');return;}
+  const [rOpens,rJobs]=await Promise.all([recendSend(null,'/opens','GET'),recendSend(null,'/schedule','GET')]);
+  if(!rOpens.ok&&!rJobs.ok){alert('同期に失敗しました：'+(rOpens.error||rOpens.status||'')+(rOpens.data&&rOpens.data.error?'\n'+rOpens.data.error:''));return;}
+  const opens=(rOpens.ok&&rOpens.data&&rOpens.data.opens)||{};
+  const jobs=(rJobs.ok&&rJobs.data&&rJobs.data.jobs)||[];
+  logs.forEach(L=>{
+    (L.recipients||[]).forEach(rc=>{const o=rc.mid&&opens[rc.mid];if(o){rc.openCount=o.count;rc.openedAt=o.first;}});
+    if(L.jobId){
+      const j=jobs.find(x=>x.id===L.jobId);
+      if(j){
+        if(j.status==='sent'){L.status='sent';L.sentAt=j.sentAt;(j.results||[]).forEach(res=>{const rc=(L.recipients||[]).find(x=>x.to===res.to&&x.ok==null);if(rc)rc.ok=!!res.ok;});}
+        else if(j.status==='error'){L.status='error';}
+        else if(j.status==='canceled'){L.status='canceled';}
+      }
+    }
+  });
+  save();render();
 }
 
 /* ---------- Tab: 情報共有メモ（参加者マスター） ---------- */
@@ -699,6 +869,10 @@ function viewSettings(){
    +'<div class="card pad"><b>フォームAPI連携（参加者リスト取込）</b><p class="hint" style="margin:4px 0 14px">申込フォームのAPIから参加者リストをJSONで取得します。CSVと同じく、編集済み項目は再取込でも保持されます。</p>'
    +'<label class="fld"><span>フォームAPI取得URL</span><input id="st_form" value="'+esc(s.formApiUrl||'')+'" placeholder="https://.../participants.json"></label>'
    +'<label class="fld"><span>認証トークン（任意）</span><input id="st_formtok" value="'+esc(s.formApiToken||'')+'"></label></div>'
+   +'<div class="card pad"><b>自動返信メール（フォームAPI取込時・受付QRコード送付）</b><p class="hint" style="margin:4px 0 14px">フォームAPI取込で<b>新規追加された参加者</b>へ、受付QRコード付きのHTMLメールを自動送信します（誤送信防止のため、送信前に確認ダイアログを表示します）。差込タグ：{{name}} {{event}} {{date}} {{venue}} {{amount}} {{qr}}</p>'
+   +'<label class="fld" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="st_arOn" '+(s.autoReplyOn?'checked':'')+' style="width:auto"><span style="margin:0">自動返信を有効にする</span></label>'
+   +'<label class="fld"><span>件名</span><input id="st_arSubj" value="'+esc(s.autoReplySubj||AR_SUBJ_DEFAULT)+'"></label>'
+   +'<label class="fld"><span>本文（{{qr}} の位置に受付QRコードが画像で入ります）</span><textarea id="st_arBody" rows="10">'+esc(s.autoReplyBody||AR_BODY_DEFAULT)+'</textarea></label></div>'
    +'<div class="card pad"><b>インフォトップ決済 連携</b><p class="hint" style="margin:4px 0 14px">「決済ページURL」は当日その場決済で開くページ。<b>決済受信エンドポイント</b>は、インフォトップ「購入者情報送信API(Webhook)」を受けるご自身のサーバ側URL（決済結果をJSON配列で返す想定）。同期すると決済ステータスと注文IDを更新します。</p>'
    +'<label class="fld"><span>インフォトップ決済ページURL（その場決済）</span><input id="st_paypage" value="'+esc(s.payPageUrl||'')+'" placeholder="https://www.infotop.jp/order/..."></label>'
    +'<label class="fld"><span>商品ID（item・任意）</span><input id="st_payitem" value="'+esc(s.payItemId||'')+'" placeholder="例）99999"></label>'
@@ -709,7 +883,7 @@ function viewSettings(){
    +'<div class="card pad"><b>データ管理</b><p class="hint" style="margin:4px 0 12px">データはこのブラウザ内に保存されています。バックアップや別PCへの移行にご利用ください。</p><div class="flex"><button class="btn" onclick="exportAll()">'+ic('download',14)+' 全データをバックアップ(JSON)</button><label class="btn" style="margin:0">'+ic('upload',14)+' 復元<input type="file" accept=".json" style="display:none" onchange="importAll(this)"></label><button class="btn danger" onclick="wipe()">全データ削除</button></div></div>'
    +'<div style="text-align:right"><button class="btn primary" onclick="saveSettings()">設定を保存</button></div></div>';
 }
-function saveSettings(){const s=store.settings;s.recendUrl=val('st_url').trim();s.recendToken=val('st_token').trim();s.receiptIssuer=val('st_issuer');s.companyAddr=val('st_addr');s.formApiUrl=val('st_form').trim();s.formApiToken=val('st_formtok').trim();s.payPageUrl=val('st_paypage').trim();s.payItemId=val('st_payitem').trim();s.payReceiveUrl=val('st_payrecv').trim();s.payReceiveToken=val('st_payrecvtok').trim();save();alert('保存しました');}
+function saveSettings(){const s=store.settings;s.recendUrl=val('st_url').trim();s.recendToken=val('st_token').trim();s.receiptIssuer=val('st_issuer');s.companyAddr=val('st_addr');s.formApiUrl=val('st_form').trim();s.formApiToken=val('st_formtok').trim();s.payPageUrl=val('st_paypage').trim();s.payItemId=val('st_payitem').trim();s.payReceiveUrl=val('st_payrecv').trim();s.payReceiveToken=val('st_payrecvtok').trim();s.autoReplyOn=chk('st_arOn');s.autoReplySubj=val('st_arSubj')||AR_SUBJ_DEFAULT;s.autoReplyBody=document.getElementById('st_arBody')?document.getElementById('st_arBody').value:s.autoReplyBody;save();alert('保存しました');}
 function exportAll(){downloadFile('懇親会管理_backup_'+todayISO()+'.json',JSON.stringify(store,null,2));}
 function importAll(input){const f=input.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!d.events)throw 0;d.people=d.people||[];d.venues=d.venues||[];store=d;save();alert('復元しました');go('dashboard');}catch(e){alert('ファイルが不正です');}};r.readAsText(f);}
 function wipe(){if(!confirm('全データを削除します。元に戻せません。よろしいですか？'))return;if(!confirm('本当に削除しますか？'))return;store=defaultStore();save();go('dashboard');}
