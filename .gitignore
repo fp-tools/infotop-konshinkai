@@ -1,0 +1,12 @@
+# OS
+Thumbs.db
+.DS_Store
+
+# エディタ
+.vscode/
+.idea/
+
+# 個人情報を含む実データは置かない（samplesの匿名サンプルのみ許可）
+*.xlsx
+~$*
+.~lock.*
