@@ -52,8 +52,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 </div>
 
 <script>
-// 管理者設定: recend Worker のURL（デプロイ後に書き換える。?api= での上書きも可能）
-const DEFAULT_API_URL = '';
+// 管理者設定: recend Worker のURL（?api= での上書きも可能）
+const DEFAULT_API_URL = 'https://recend-mailer.soga-naoya.workers.dev';
 const API_URL = (new URLSearchParams(location.search).get('api') || DEFAULT_API_URL).replace(/\/+$/, '');
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
