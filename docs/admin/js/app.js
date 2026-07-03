@@ -513,8 +513,38 @@ function applyPayCsv(){
     else if(st==='paid'&&!p.paidAt)p.paidAt=new Date().toISOString();
     upd++;
   });
+  const grp=reconcileGroupPayments(e); // 代表者の決済額がお連れ様分を含む場合の按分
   save();closeModal();render();
-  alert(upd+'件の決済状況を反映しました。\n※領収書の日付には注文確定日が使用されます。');
+  alert(upd+'件の決済状況を反映しました。'+(grp?'\nお連れ様 '+grp+'名を代表者決済に合算（支払済み扱い）にしました。':'')+'\n※領収書の日付には注文確定日が使用されます。');
+}
+
+/* ---------- グループ決済の按分 ----------
+ * 代表者（申込者）の決済額が「本人分＋お連れ様分」をカバーしている場合、
+ * お連れ様も支払済みとして按分する（例: 参加費3,000円で代表者が6,000円決済＝2名分）。
+ * 代表者のamountは本人単価へ戻し、お連れ様に単価を割り当てるため売上の二重計上は起きない。 */
+function reconcileGroupPayments(e){
+  let fixed=0;
+  const optAmt=l=>{const o=(e.feeOptions||[]).find(x=>x.label===l);return o?Number(o.amount):null;};
+  (e.participants||[]).filter(p=>isMain(p)&&p.status!=='cancel'&&p.payStatus==='paid').forEach(main=>{
+    const comps=companionsOf(e,main.id).filter(c=>c.payStatus!=='paid'&&c.payStatus!=='cancel');
+    if(!comps.length)return;
+    const paidAmt=Number(main.paidAmount)||Number(main.amount)||0;
+    let mainUnit=optAmt(main.feeOptLabel);
+    if(mainUnit==null)mainUnit=Number(e.fee)||0;
+    const compUnits=comps.map(c=>{const u=optAmt(c.feeOptLabel);return u!=null?u:(Number(c.amount)>0?Number(c.amount):(Number(e.fee)||0));});
+    const needed=mainUnit+compUnits.reduce((s,u)=>s+u,0);
+    if(needed<=0||paidAmt<needed)return; // 全員分をカバーしている場合のみ按分（部分払いは対象外）
+    if(Number(main.amount)!==mainUnit){main.paidAmount=main.paidAmount||main.amount;main.amount=mainUnit;}
+    comps.forEach((c,i)=>{
+      c.payStatus='paid';c.payMethod='代表者決済';
+      c.amount=compUnits[i];
+      if(main.orderId)c.orderId=main.orderId;
+      c.paidAt=main.paidAt||c.paidAt||new Date().toISOString(); // 領収書日付も代表者の注文確定日に揃える
+      if(!/代表者.*決済に合算/.test(c.note||''))c.note=(c.note?c.note+' / ':'')+'代表者('+(main.name||'')+'様)の決済に合算';
+      fixed++;
+    });
+  });
+  return fixed;
 }
 
 /* ---------- People master ---------- */
@@ -608,7 +638,8 @@ async function syncPayments(eid){
     if(type===4||type===2){p.payStatus='cancel';}else{p.payStatus='paid';p.payMethod='オンライン';if(order)p.orderId=order;p.paidAt=p.paidAt||new Date().toISOString();}
     cnt++;
   });
-  save();render();alert('決済情報を同期しました（'+cnt+'件マッチ'+(unmatchedAdd?' / 未特定 '+unmatchedAdd+'件を「特定ができなかった決済」に追加':'')+'）。');
+  const grp=reconcileGroupPayments(e);
+  save();render();alert('決済情報を同期しました（'+cnt+'件マッチ'+(unmatchedAdd?' / 未特定 '+unmatchedAdd+'件を「特定ができなかった決済」に追加':'')+(grp?' / お連れ様 '+grp+'名を代表者決済に合算':'')+'）。');
 }
 function linkUnmatchedPayment(eid,idx){
   const e=getEvent(eid),u=(e.unmatchedPayments||[])[idx];if(!u)return;
@@ -618,7 +649,7 @@ function linkUnmatchedPayment(eid,idx){
   else{p.payStatus='paid';p.payMethod='オンライン';if(u.order)p.orderId=u.order;p.paidAt=p.paidAt||new Date().toISOString();}
   // 決済に使われたメールを未登録の参加者（お連れ様等）に引き継ぐ（領収書送付・受取人ページのログインに必要）
   if(!p.email&&u.mail){p.email=u.mail;if(p.source==='csv'&&!p.edited.includes('email'))p.edited.push('email');}
-  e.unmatchedPayments.splice(idx,1);save();render();
+  e.unmatchedPayments.splice(idx,1);reconcileGroupPayments(e);save();render();
 }
 function dismissUnmatched(eid,idx){const e=getEvent(eid);if(!e.unmatchedPayments)return;e.unmatchedPayments.splice(idx,1);save();render();}
 
@@ -918,7 +949,9 @@ function savePayStatus(eid,pid){
   p.payMethod=st==='paid'?(method||'オンライン'):method;
   p.orderId=order;
   if(st==='paid'&&!p.paidAt)p.paidAt=new Date().toISOString();
+  const grp=reconcileGroupPayments(e);
   save();closeModal();render();
+  if(grp)alert('決済額がお連れ様分を含むため、お連れ様 '+grp+'名も支払済み（代表者決済）にしました。');
 }
 function openPayPage(eid,pid){
   const s=store.settings;if(!s.payPageUrl){alert('設定で「インフォトップ決済ページURL」を登録してください。');go('settings');return;}
