@@ -57,6 +57,16 @@ const DEFAULT_API_URL = 'https://recend-mailer.soga-naoya.workers.dev';
 const API_URL = (new URLSearchParams(location.search).get('api') || DEFAULT_API_URL).replace(/\/+$/, '');
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// 券面画像で文字化けの恐れがある文字（絵文字・第2面の文字等）を検出。㈱①髙﨑などの一般的な機種依存文字は対象外
+function riskyChars(s) {
+  const out = new Set();
+  for (const ch of String(s || '')) {
+    const cp = ch.codePointAt(0);
+    let em = false; try { em = /\p{Extended_Pictographic}/u.test(ch); } catch (e) {}
+    if (cp >= 0x10000 || em || cp === 0x200D || cp === 0xFE0F) out.add(ch);
+  }
+  return [...out];
+}
 const yen = n => '¥' + (Number(n) || 0).toLocaleString('ja-JP');
 const fmtD = iso => { if (!iso) return '-'; const d = new Date(iso); return isNaN(d) ? '-' : d.toLocaleDateString('ja-JP'); };
 let _items = [], _cred = null;
@@ -121,6 +131,9 @@ async function doEdit(i) {
   };
   if (!changes.addressee) { alert('宛名を入力してください。'); return; }
   if (!isFinite(changes.amount) || changes.amount <= 0) { alert('金額が不正です。'); return; }
+  // 絵文字・特殊文字は領収書画像で正しく表示されない場合があるため事前に警告する
+  const risky = [...new Set([...riskyChars(changes.addressee), ...riskyChars(changes.note)])];
+  if (risky.length && !confirm('宛名または但し書きに絵文字・特殊文字（' + risky.join(' ') + '）が含まれています。\n領収書画像で正しく表示されない場合があります。このまま再発行しますか？')) return;
   if (!confirm('この内容で再発行します。よろしいですか？\n（元の領収書は無効となり、新しい番号で発行されます）')) return;
   const btn = document.getElementById('ed_btn_' + i); btn.disabled = true; btn.textContent = '再発行中…';
   try {

@@ -796,6 +796,21 @@ function issueReceiptNo(p){const r=p.receipt;
   else if(r.dirty){r.revision=(r.revision||0)+1;r.reissue=true;r.dirty=false;}
   save();return receiptDisplayNo(p);}
 function receiptDisplayNo(p){const r=p.receipt;return r.no?(r.no+(r.revision?'-'+r.revision:'')):'';}
+/* 券面PNGで文字化け（豆腐）の恐れがある文字を検出: 絵文字・合字用制御文字・第2面以降の文字（𠮷 等の希少漢字含む）
+   ※㈱・①・髙・﨑などの一般的な機種依存文字は正常に描画されるため対象外 */
+function riskyChars(s){
+  const out=new Set();
+  for(const ch of String(s||'')){
+    const cp=ch.codePointAt(0);
+    let em=false;try{em=/\p{Extended_Pictographic}/u.test(ch);}catch(e){}
+    if(cp>=0x10000||em||cp===0x200D||cp===0xFE0F)out.add(ch);
+  }
+  return [...out];
+}
+function receiptCharWarning(p){
+  const r=[...riskyChars(p.receipt.name||p.company||p.name||''),...riskyChars(p.receipt.note||'')];
+  return r.length?[...new Set(r)]:null;
+}
 /* 受取人ページ（claim）用の券面レコード。Worker(KV)に永続保存され、メール＋申込番号で本人が再取得・修正できる */
 function receiptRecord(e,p){const s=store.settings;
   return {no:receiptDisplayNo(p),rootNo:p.receipt.no,revision:p.receipt.revision||0,isReissue:!!p.receipt.reissue,
@@ -881,8 +896,10 @@ function receiptHTML(e,p){
   +'</div>';}
 function previewReceipt(eid,pid){const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);
   // 修正履歴はデータとして保持・Chatwork通知される（画面表示は不要のため出さない）
+  const riskW=receiptCharWarning(p);
+  const charWarn=riskW?'<div class="banner" style="background:var(--danger-soft);border-color:#f3c6c2;color:var(--danger);margin-bottom:12px"><b>文字化けの可能性:</b> 宛名・但し書きに絵文字・特殊文字（'+esc(riskW.join(' '))+'）が含まれています。下のプレビューで正しく表示されているか（□になっていないか）ご確認ください。プレビューどおりの画像が送付されます。</div>':'';
   const reissueNote=p.receipt.dirty?'<div class="hint" style="margin-top:10px;color:var(--warn);text-align:center">※発行後に変更があるため、次回送信時に新しい番号（'+esc(p.receipt.no)+'-'+((p.receipt.revision||0)+1)+'）で「（再）」として再発行されます。</div>':'';
-  modal('領収書プレビュー'+(receiptDisplayNo(p)?' - '+receiptDisplayNo(p):''),receiptHTML(e,p)+reissueNote,[{label:'閉じる',cls:'btn',on:'closeModal()'},{label:'印刷',cls:'btn',on:'printNode()'},{label:'発行・送信',cls:'btn primary',on:"sendReceipt('"+eid+"','"+pid+"')"}],660);}
+  modal('領収書プレビュー'+(receiptDisplayNo(p)?' - '+receiptDisplayNo(p):''),charWarn+receiptHTML(e,p)+reissueNote,[{label:'閉じる',cls:'btn',on:'closeModal()'},{label:'印刷',cls:'btn',on:'printNode()'},{label:'発行・送信',cls:'btn primary',on:"sendReceipt('"+eid+"','"+pid+"')"}],660);}
 function previewReminder(eid){const e=getEvent(eid),p=(e.participants||[]).find(x=>x.status!=='cancel')||newParticipant();modal('リマインド プレビュー（1人目・HTMLメール表示）','<div class="card pad" style="font-size:13px"><div style="margin-bottom:10px"><b>件名：</b>'+esc(mergeBody(val('rm_subj'),e,p))+'</div><div class="divider"></div>'+mergeBodyHTML(document.getElementById('rm_body').value,e,p,'')+'</div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],640);}
 function mergeBody(t,e,p){return String(t).replace(/{{name}}/g,p.name||'ご参加者').replace(/{{event}}/g,e.name||'').replace(/{{date}}/g,e.date||'').replace(/{{venue}}/g,e.venue||'').replace(/{{amount}}/g,yen(p.amount??e.fee));}
 /* QRコード画像URL（メール埋め込み用。メールではJS実行不可のため画像URL参照にする）
@@ -965,6 +982,8 @@ async function sendTestReminder(eid){
 async function sendReceipt(eid,pid){
   const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);
   if(!p.email){if(!confirm('送信先メールアドレスが未登録です。発行済みフラグだけ立てますか？'))return;issueReceiptNo(p);p.receipt.issued=true;p.receipt.issuedAt=new Date().toISOString();save();render();return;}
+  const riskW=receiptCharWarning(p);
+  if(riskW&&!confirm('【文字化けの可能性】宛名または但し書きに絵文字・特殊文字が含まれています：\n　'+riskW.join('　')+'\n\n領収書画像（PNG）で正しく表示されない場合があります。\nプレビューで表示を確認のうえ、このまま発行しますか？'))return;
   const mid=uid();
   const wasDirty=!!p.receipt.dirty,prevNo=receiptDisplayNo(p);
   const dispNo=issueReceiptNo(p); // 採番（編集後の再送は IS-Exxxxx-1… ＋（再））
@@ -984,6 +1003,8 @@ async function sendReceipt(eid,pid){
 async function sendAllReceipts(eid){
   const e=getEvent(eid),targets=(e.participants||[]).filter(p=>p.status!=='cancel'&&p.email&&!p.receipt.sentAt&&(p.receipt.amount??p.amount)>0);
   if(!targets.length){alert('送信対象（未送信・金額あり）がありません。');return;}
+  const riskList=targets.map(p=>({p,w:receiptCharWarning(p)})).filter(x=>x.w);
+  if(riskList.length&&!confirm('【文字化けの可能性】以下の方の宛名・但し書きに絵文字・特殊文字が含まれています：\n'+riskList.map(x=>'　・'+(x.p.name||'')+'：'+x.w.join(' ')).join('\n')+'\n\n領収書画像（PNG）で正しく表示されない場合があります。各行の「プレビュー」で確認できます。\nこのまま一括発行を続けますか？'))return;
   if(!confirm(targets.length+'名に領収書（PNG添付）を発行・送信します。\n※添付付きのため1通ずつ順に送信します（'+targets.length+'通で1〜2分程度かかる場合があります）'))return;
   const recs=targets.map(p=>({p,mid:uid()}));
   recs.forEach(({p})=>issueReceiptNo(p)); // 発行順に連番を採番
