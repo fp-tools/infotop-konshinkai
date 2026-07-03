@@ -129,7 +129,7 @@ async function notifyChatwork(env, info) {
   try { const v = await env.MAILLOG.get('cfg:chatwork'); cfg = v ? JSON.parse(v) : null; } catch (e) {}
   if (!cfg || !cfg.token || !cfg.roomId) return;
   const tpl = cfg.template ||
-    '[info][title]領収書が修正されました[/title]イベント: {event}\n領収書番号: {no} → {newNo}\n修正者: {editedBy}\n宛名: {addressee}\n変更内容:\n{changes}\n日時: {date}[/info]';
+    '[info][title]領収書が修正されました[/title]イベント: {event}\n領収書番号: {no} → {newNo}\n修正者: {addressee}\n変更内容:\n{changes}\n日時: {date}[/info]';
   const changesText = (info.changes || []).map((c) => {
     const F = { addressee: '宛名', amount: '金額', note: '但し書き', name: '宛名' };
     return '・' + (F[c.field] || c.field) + ': ' + c.before + ' → ' + c.after;

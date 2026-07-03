@@ -1785,7 +1785,7 @@ function viewSettings(){
    +'<b style="font-size:13px">① 領収書修正の通知先</b><p class="hint" style="margin:4px 0 10px">受取人または管理者が領収書を修正（再発行）したときに通知。置換タグ：<code>{event}</code> <code>{no}</code> <code>{newNo}</code> <code>{editedBy}</code> <code>{addressee}</code> <code>{email}</code> <code>{changes}</code> <code>{date}</code></p>'
    +'<label class="fld"><span>ルームID</span><input id="cw_room" placeholder="例）123456789（チャットURLの rid の数字）"></label>'
    +'<label class="fld"><span>メンション（任意・本文の先頭に付加）</span><input id="cw_mention" placeholder="例）[To:1234567]曽我さん または [toall]"></label>'
-   +'<label class="fld"><span>通知文テンプレート（空欄なら既定文）</span><textarea id="cw_tpl" rows="5" placeholder="[info][title]領収書が修正されました[/title]イベント: {event}\n領収書番号: {no} → {newNo}\n修正者: {editedBy}\n宛名: {addressee}\n変更内容:\n{changes}\n日時: {date}[/info]"></textarea></label>'
+   +'<label class="fld"><span>通知文テンプレート（空欄なら既定文）</span><textarea id="cw_tpl" rows="5" placeholder="[info][title]領収書が修正されました[/title]イベント: {event}\n領収書番号: {no} → {newNo}\n修正者: {addressee}\n変更内容:\n{changes}\n日時: {date}[/info]"></textarea></label>'
    +'<div class="divider"></div>'
    +'<b style="font-size:13px">② 締め報告（経理用売上明細）の通知先</b><p class="hint" style="margin:4px 0 10px">各イベントの「原価・経費」タブで締め作業を実行したとき、売上・原価・粗利の明細を通知します。①とは別のグループを指定できます。</p>'
    +'<label class="fld"><span>ルームID（経理向けグループ）</span><input id="cw2_room" placeholder="例）987654321"></label>'
