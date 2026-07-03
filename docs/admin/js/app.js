@@ -99,19 +99,33 @@ async function doLogin(){
   try{
     const res=await fetch(WORKER_URL+'/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,pass})});
     const j=await res.json().catch(()=>null);
-    if(res.ok&&j&&j.token){SESS=j.token;localStorage.setItem('ITGK_SESS',SESS);await pullStore();hideLogin();render();}
+    if(res.ok&&j&&j.token){SESS=j.token;localStorage.setItem('ITGK_SESS',SESS);await pullStore();hideLogin();route=parseHash();render();}
     else showLogin((j&&j.error)||'ログインに失敗しました。');
   }catch(e){showLogin('通信エラー: '+e);}
   btn.disabled=false;btn.textContent='ログイン';
 }
 function logout(msg){SESS='';localStorage.removeItem('ITGK_SESS');showLogin(msg||'');}
 async function boot(){
-  if(SESS&&await pullStore()){hideLogin();render();}
+  if(SESS&&await pullStore()){hideLogin();route=parseHash();render();}
   else{SESS='';localStorage.removeItem('ITGK_SESS');showLogin();}
 }
 
+/* ---------- ルーティング: 各ページに固有URL（#/dashboard, #/events, #/event/<id>/<tab>, #/venues, #/templates, #/settings） ---------- */
 let route={view:'dashboard',eventId:null,tab:'participants'};
-function go(view,eventId=null,tab='participants'){route={view,eventId,tab};render();window.scrollTo(0,0);}
+const ROUTE_VIEWS=['dashboard','events','venues','templates','settings'];
+function routeToHash(r){return r.view==='event'?('#/event/'+r.eventId+'/'+(r.tab||'participants')):('#/'+r.view);}
+function parseHash(){
+  const parts=location.hash.replace(/^#\/?/,'').split('/');
+  if(parts[0]==='event'&&parts[1])return {view:'event',eventId:parts[1],tab:parts[2]||'participants'};
+  if(ROUTE_VIEWS.includes(parts[0]))return {view:parts[0],eventId:null,tab:'participants'};
+  return {view:'dashboard',eventId:null,tab:'participants'};
+}
+function go(view,eventId=null,tab='participants'){
+  const target=routeToHash({view,eventId,tab});
+  if(location.hash===target){route={view,eventId,tab};render();window.scrollTo(0,0);}
+  else location.hash=target; // hashchange経由でrenderされる（ブラウザ履歴に残る）
+}
+window.addEventListener('hashchange',()=>{route=parseHash();render();window.scrollTo(0,0);});
 
 function render(){
   renderNav();renderStoreInfo();
