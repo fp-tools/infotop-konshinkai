@@ -587,8 +587,8 @@ function tabParticipants(e){
     // メール + 電話（2段）
     +'<td>'+esc(p.email)+(p.phone?'<div class="hint">'+esc(p.phone)+'</div>':'')+'</td>'
     +'<td>'+(p.ptype?'<span class="tag gray">'+esc(p.ptype)+'</span>':'<span class="hint">-</span>')+'</td>'
-    // 参加費 + 決済状況（2段）
-    +'<td>'+(p.amount!=null?yen(p.amount):'-')+(p.feeOptLabel?' <span class="hint">'+esc(p.feeOptLabel)+'</span>':'')+'<div>'+payBadge(p)+'</div></td>'
+    // 参加費 + 決済状況（2段・「変更」から手動変更可能）
+    +'<td>'+(p.amount!=null?yen(p.amount):'-')+(p.feeOptLabel?' <span class="hint">'+esc(p.feeOptLabel)+'</span>':'')+'<div>'+payBadgeEditable(e.id,p)+'</div></td>'
     // 領収書の有無（フォーム回答を初期値に、後から変更可能。一斉発行の対象判定に使用）
     +'<td><select style="width:auto;padding:4px 6px;font-size:12px" onchange="rcptNeed(\''+e.id+'\',\''+p.id+'\',this.value)"><option value=""'+(!p.receipt.need?' selected':'')+'>未回答</option><option value="必要"'+(p.receipt.need==='必要'?' selected':'')+'>必要</option><option value="不要"'+(p.receipt.need==='不要'?' selected':'')+'>不要</option></select></td>'
     +'<td>'+(p.secondParty?'<span class="tag ok">参加</span>':'<span class="hint">-</span>')+'</td>'
@@ -611,6 +611,12 @@ function editParticipant(eid,pid){
     +'<div class="row"><label class="fld" style="flex:1"><span>メールアドレス</span><input id="pf_email" value="'+esc(p.email)+'"></label><label class="fld" style="flex:1"><span>電話番号</span><input id="pf_phone" value="'+esc(p.phone)+'"></label></div>'
     +'<div class="row"><label class="fld" style="flex:1"><span>参加費オプション</span>'+optSel+'</label><label class="fld" style="flex:1"><span>参加費（円）</span><input id="pf_amount" type="number" value="'+(p.amount??'')+'"></label></div>'
     +'<div class="row"><label class="fld" style="flex:1"><span>申込番号 <span class="hint">同時申込の紐付け＋領収書ページのログインに使用</span></span><input id="pf_group" value="'+esc(p.groupId)+'" placeholder="例）55981"></label><label class="fld" style="flex:1"><span>二次会</span><br><label class="chk"><input type="checkbox" id="pf_sp" '+(p.secondParty?'checked':'')+'> 二次会に参加</label></label></div>'
+    +'<div class="row"><label class="fld" style="flex:1"><span>決済状況</span><select id="pf_paystatus">'
+      +'<option value="unpaid"'+(p.payStatus!=='paid'&&p.payStatus!=='cancel'?' selected':'')+'>未払い</option>'
+      +'<option value="paid"'+(p.payStatus==='paid'?' selected':'')+'>支払済</option>'
+      +'<option value="cancel"'+(p.payStatus==='cancel'?' selected':'')+'>取消</option></select></label>'
+    +'<label class="fld" style="flex:1"><span>決済方法</span><select id="pf_paymethod"><option value="">（未設定）</option>'+['オンライン','現金','銀行振込','その他'].map(m=>'<option'+(p.payMethod===m?' selected':'')+'>'+m+'</option>').join('')+'</select></label>'
+    +'<label class="fld" style="flex:1"><span>注文ID（任意）</span><input id="pf_order" value="'+esc(p.orderId||'')+'" placeholder="例）10048190"></label></div>'
     +'<label class="fld"><span>備考メモ</span><textarea id="pf_note" rows="2">'+esc(p.note)+'</textarea></label>'
     +'<div class="hint">基本情報を編集すると「編集」が付き、CSV/API再取込でも保持されます。</div>',
     [{label:'この参加者を削除',cls:'btn danger',on:"removeParticipant('"+eid+"','"+pid+"')"},{label:'保存',cls:'btn primary',on:"saveParticipant('"+eid+"','"+pid+"')"}],600);
@@ -623,6 +629,10 @@ function saveParticipant(eid,pid){
   const optV=val('pf_opt');p.feeOptLabel=optV?optV.split('|')[0]:'';
   const amt=Number(val('pf_amount'))||0;if(amt!==p.amount){p.amount=amt;if(p.source==='csv'&&!p.edited.includes('amount'))p.edited.push('amount');}
   p.secondParty=chk('pf_sp');p.note=val('pf_note');
+  // 決済状況（手動変更・APIを受け取れなかった場合の補正用）
+  const pst=val('pf_paystatus'),pmm=val('pf_paymethod'),pfo=val('pf_order').trim();
+  p.payStatus=pst;p.payMethod=pst==='paid'?(pmm||'オンライン'):pmm;p.orderId=pfo;
+  if(pst==='paid'&&!p.paidAt)p.paidAt=new Date().toISOString();
   const gv=val('pf_group');if(gv!==(p.groupId||'')){p.groupId=gv;if(p.source==='csv'&&!p.edited.includes('groupId'))p.edited.push('groupId');}
   if(!p.receipt.amount)p.receipt.amount=p.amount;if(!p.receipt.name)p.receipt.name=p.company||p.name;
   if(p.email)ensurePerson(p,e);save();closeModal();render();
@@ -653,7 +663,7 @@ function tabReception(e){
     +'<td>'+(comp?'<span style="color:var(--muted)">└ </span><span class="tag gray">連れ</span> ':'')+'<b>'+esc(p.name)+'</b>'+(p.kana?'<div class="hint">'+(comp?'　':'')+esc(p.kana)+'</div>':'')+(p.company?'<div class="hint">'+esc(p.company)+'</div>':'')+'</td>'
     +'<td>'+(p.groupId?esc(p.groupId):'-')+'</td>'
     +'<td><input type="number" value="'+(p.amount??0)+'" style="width:100px" onchange="setAmount(\''+e.id+'\',\''+p.id+'\',this.value)"></td>'
-    +'<td>'+payBadge(p)+'</td>'
+    +'<td>'+payBadgeEditable(e.id,p)+'</td>'
     +'<td><input value="'+esc(p.receipt.name||'')+'" style="min-width:140px" onchange="setReceiptName(\''+e.id+'\',\''+p.id+'\',this.value)"></td>'
     +'<td class="flex">'+(p.checkedIn?'<button class="btn sm" onclick="undoCheckin(\''+e.id+'\',\''+p.id+'\')">取消</button>':'<button class="btn sm primary" onclick="receptionConfirm(\''+e.id+'\',\''+p.id+'\')">受付</button>')+'<button class="btn sm danger" onclick="markCancel(\''+e.id+'\',\''+p.id+'\')">欠席</button></td></tr>';});
   h+='</tbody></table></div>';
@@ -750,6 +760,29 @@ function payBadge(p){
   if(p.payStatus==='paid')return '<span class="tag ok">'+ic('check',11)+' 支払済</span>'+(p.payMethod?'<div class="hint">'+esc(p.payMethod)+(p.orderId?' / '+esc(p.orderId):'')+'</div>':'');
   if(p.payStatus==='cancel')return '<span class="tag gray">取消</span>';
   return '<span class="tag warn">未払い</span>';
+}
+/* 決済バッジ＋「変更」リンク（APIを受け取れなかった場合などの手動変更用） */
+function payBadgeEditable(eid,p){return payBadge(p)+' <a href="javascript:openPayStatusModal(\''+eid+'\',\''+p.id+'\')" class="hint" style="white-space:nowrap">変更</a>';}
+function openPayStatusModal(eid,pid){
+  const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);if(!p)return;
+  modal('決済状況の変更 - '+esc(p.name||'(無名)'),
+    '<div class="hint" style="margin-bottom:12px">決済Webhookを受け取れなかった場合や現地確認できた場合など、決済状況を手動で変更できます。インフォトップの注文IDが分かる場合は入力してください（任意）。</div>'
+    +'<label class="fld"><span>決済状況</span><select id="pm_status">'
+      +'<option value="unpaid"'+(p.payStatus!=='paid'&&p.payStatus!=='cancel'?' selected':'')+'>未払い</option>'
+      +'<option value="paid"'+(p.payStatus==='paid'?' selected':'')+'>支払済</option>'
+      +'<option value="cancel"'+(p.payStatus==='cancel'?' selected':'')+'>取消（決済キャンセル）</option></select></label>'
+    +'<label class="fld"><span>決済方法</span><select id="pm_method"><option value="">（未設定）</option>'+['オンライン','現金','銀行振込','その他'].map(m=>'<option'+(p.payMethod===m?' selected':'')+'>'+m+'</option>').join('')+'</select></label>'
+    +'<label class="fld"><span>インフォトップ注文ID（任意）</span><input id="pm_order" value="'+esc(p.orderId||'')+'" placeholder="例）10048190"></label>',
+    [{label:'キャンセル',cls:'btn',on:'closeModal()'},{label:'保存',cls:'btn primary',on:"savePayStatus('"+eid+"','"+pid+"')"}],460);
+}
+function savePayStatus(eid,pid){
+  const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);if(!p)return;
+  const st=val('pm_status'),method=val('pm_method'),order=val('pm_order').trim();
+  p.payStatus=st;
+  p.payMethod=st==='paid'?(method||'オンライン'):method;
+  p.orderId=order;
+  if(st==='paid'&&!p.paidAt)p.paidAt=new Date().toISOString();
+  save();closeModal();render();
 }
 function openPayPage(eid,pid){
   const s=store.settings;if(!s.payPageUrl){alert('設定で「インフォトップ決済ページURL」を登録してください。');go('settings');return;}
