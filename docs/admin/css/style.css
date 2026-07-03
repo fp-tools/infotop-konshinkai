@@ -105,3 +105,8 @@ svg{flex:none}
 .vcard .eye .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:800;color:#b6c0d2}
 .vcard .vbody{padding:14px}
 @media(max-width:760px){.side{width:64px}.side .logo small,.nav .sec,.nav button span.lbl,.side .foot{display:none}.nav button{justify-content:center}.content{padding:16px}}
+
+/* クリック可能な決済バッジ（ホバーで変更可能なことを示す） */
+.paybadge-btn{cursor:pointer;display:inline-block;border-radius:8px;padding:2px 4px;margin:-2px -4px;transition:background .12s}
+.paybadge-btn:hover{background:#eef1f6;box-shadow:0 0 0 1px var(--line)}
+.paybadge-btn:hover::after{content:" ✎ 変更";color:var(--brand);font-size:11px;font-weight:600;white-space:nowrap}

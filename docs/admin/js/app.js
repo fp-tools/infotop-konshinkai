@@ -761,8 +761,8 @@ function payBadge(p){
   if(p.payStatus==='cancel')return '<span class="tag gray">取消</span>';
   return '<span class="tag warn">未払い</span>';
 }
-/* 決済バッジ＋「変更」リンク（APIを受け取れなかった場合などの手動変更用） */
-function payBadgeEditable(eid,p){return payBadge(p)+' <a href="javascript:openPayStatusModal(\''+eid+'\',\''+p.id+'\')" class="hint" style="white-space:nowrap">変更</a>';}
+/* クリック可能な決済バッジ（バッジ自体を押すと変更モーダル。ホバーで✎表示） */
+function payBadgeEditable(eid,p){return '<span class="paybadge-btn" onclick="openPayStatusModal(\''+eid+'\',\''+p.id+'\')" title="クリックで決済状況を変更">'+payBadge(p)+'</span>';}
 function openPayStatusModal(eid,pid){
   const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);if(!p)return;
   modal('決済状況の変更 - '+esc(p.name||'(無名)'),
