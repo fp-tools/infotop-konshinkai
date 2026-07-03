@@ -592,7 +592,7 @@ function tabParticipants(e){
     // 領収書の有無（フォーム回答を初期値に、後から変更可能。一斉発行の対象判定に使用）
     +'<td><select style="width:auto;padding:4px 6px;font-size:12px" onchange="rcptNeed(\''+e.id+'\',\''+p.id+'\',this.value)"><option value=""'+(!p.receipt.need?' selected':'')+'>未回答</option><option value="必要"'+(p.receipt.need==='必要'?' selected':'')+'>必要</option><option value="不要"'+(p.receipt.need==='不要'?' selected':'')+'>不要</option></select></td>'
     +'<td>'+(p.secondParty?'<span class="tag ok">参加</span>':'<span class="hint">-</span>')+'</td>'
-    +'<td class="flex">'+(comp?'':'<button class="btn sm" onclick="addCompanion(\''+e.id+'\',\''+p.id+'\')" title="お連れ様を追加">'+ic('plus',13)+'連れ</button>')+'<button class="btn sm" onclick="showQR(\''+e.id+'\',\''+p.id+'\')" title="QR発行">'+ic('qr',14)+'</button><button class="btn sm" onclick="editParticipant(\''+e.id+'\',\''+p.id+'\')">編集</button><button class="btn sm danger" onclick="cancelParticipant(\''+e.id+'\',\''+p.id+'\')">ｷｬﾝｾﾙ</button></td></tr>';});
+    +'<td class="flex">'+(comp?'':'<button class="btn sm" onclick="addCompanion(\''+e.id+'\',\''+p.id+'\')" title="お連れ様を追加">'+ic('plus',13)+'連れ</button>')+'<button class="btn sm" onclick="editParticipant(\''+e.id+'\',\''+p.id+'\')">編集</button><button class="btn sm danger" onclick="cancelParticipant(\''+e.id+'\',\''+p.id+'\')">ｷｬﾝｾﾙ</button></td></tr>';});
   h+='</tbody></table></div>';
   const cancels=(e.participants||[]).filter(p=>p.status==='cancel');
   if(cancels.length)h+='<h2 class="sec">キャンセル（'+cancels.length+'名）<span class="hint" style="font-weight:400">　CSVを再取込しても復活しません</span></h2><div class="card pad">'+cancels.map(p=>'<span class="tag gray" style="margin:2px">'+esc(p.name||'(無名)')+(p.groupId?' #'+esc(p.groupId):'')+' <a href="javascript:restoreP(\''+e.id+'\',\''+p.id+'\')">戻す</a></span>').join(' ')+'</div>';
@@ -619,7 +619,7 @@ function editParticipant(eid,pid){
     +'<label class="fld" style="flex:1"><span>注文ID（任意）</span><input id="pf_order" value="'+esc(p.orderId||'')+'" placeholder="例）10048190"></label></div>'
     +'<label class="fld"><span>備考メモ</span><textarea id="pf_note" rows="2">'+esc(p.note)+'</textarea></label>'
     +'<div class="hint">基本情報を編集すると「編集」が付き、CSV/API再取込でも保持されます。</div>',
-    [{label:'この参加者を削除',cls:'btn danger',on:"removeParticipant('"+eid+"','"+pid+"')"},{label:'保存',cls:'btn primary',on:"saveParticipant('"+eid+"','"+pid+"')"}],600);
+    [{label:'この参加者を削除',cls:'btn danger',on:"removeParticipant('"+eid+"','"+pid+"')"},{label:ic('qr',13)+' QR・名札',cls:'btn',on:"saveParticipant('"+eid+"','"+pid+"');showQR('"+eid+"','"+pid+"')"},{label:'保存',cls:'btn primary',on:"saveParticipant('"+eid+"','"+pid+"')"}],600);
   document.getElementById('pf_opt').addEventListener('change',function(){if(this.value){document.getElementById('pf_amount').value=this.value.split('|')[1];}});
 }
 function saveParticipant(eid,pid){
