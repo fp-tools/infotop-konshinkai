@@ -716,7 +716,7 @@ function tabParticipants(e){
     +'<td class="flex">'+(comp?'':'<button class="btn sm" onclick="addCompanion(\''+e.id+'\',\''+p.id+'\')" title="お連れ様を追加">'+ic('plus',13)+'連れ</button>')+'<button class="btn sm" onclick="editParticipant(\''+e.id+'\',\''+p.id+'\')">編集</button><button class="btn sm danger" onclick="cancelParticipant(\''+e.id+'\',\''+p.id+'\')">ｷｬﾝｾﾙ</button></td></tr>';});
   h+='</tbody></table></div>';
   const cancels=(e.participants||[]).filter(p=>p.status==='cancel');
-  if(cancels.length)h+='<h2 class="sec">キャンセル（'+cancels.length+'名）<span class="hint" style="font-weight:400">　CSVを再取込しても復活しません</span></h2><div class="card pad">'+cancels.map(p=>'<span class="tag gray" style="margin:2px">'+esc(p.name||'(無名)')+(p.groupId?' #'+esc(p.groupId):'')+' <a href="javascript:restoreP(\''+e.id+'\',\''+p.id+'\')">戻す</a></span>').join(' ')+'</div>';
+  if(cancels.length)h+='<h2 class="sec">キャンセル（'+cancels.length+'名）<span class="hint" style="font-weight:400">　CSVを再取込しても復活しません。支払済みの方は領収書発行の対象として「領収書発行」タブに残ります</span></h2><div class="card pad">'+cancels.map(p=>'<span class="tag gray" style="margin:2px">'+esc(p.name||'(無名)')+(p.groupId?' #'+esc(p.groupId):'')+(p.payStatus==='paid'?' <b style="color:var(--ok)">✓支払済</b>':'')+' <a href="javascript:restoreP(\''+e.id+'\',\''+p.id+'\')">戻す</a></span>').join(' ')+'</div>';
   return h;
 }
 function addParticipant(eid){const e=getEvent(eid);const p=newParticipant({amount:e.fee||0});p.receipt.amount=e.fee||0;e.participants.push(p);save();editParticipant(eid,p.id,true);}
@@ -992,17 +992,22 @@ function previewAutoReply(eid){
   modal('自動返信メール プレビュー','<div class="card pad" style="font-size:13px"><div style="margin-bottom:10px"><b>件名：</b>'+esc(mergeBody(val('ar_subj'),e,p))+'</div><div class="divider"></div>'+mergeBodyHTML(document.getElementById('ar_body').value,e,p,'')+'</div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],640);
 }
 /* ---------- Tab: 領収書発行 ---------- */
+/* 領収書発行の対象: 参加中の全員＋キャンセル済みでも「支払済み・発行済み・入金あり」の人
+   （お金を受領している以上、キャンセルでも領収書の発行対象のため一覧から消さない） */
+function receiptTargets(e){
+  return (e.participants||[]).filter(p=>p.status!=='cancel'||p.payStatus==='paid'||p.receipt.no||(Number(p.paidAmount)||0)>0);
+}
 function tabReceipts(e){
-  const ps=(e.participants||[]).filter(p=>p.status!=='cancel');
+  const ps=receiptTargets(e);
   const issued=ps.filter(p=>p.receipt.no).length;
   let h='<div class="card pad"><div class="between" style="margin-bottom:6px"><b>'+ic('receipt',16)+' 領収書発行</b><div class="flex">'
     +'<button class="btn sm" onclick="autoGroupReceipts(\''+e.id+'\')">申込グループで自動まとめ</button>'
     +'<button class="btn sm" onclick="downloadReceiptZip(\''+e.id+'\')">'+ic('download',14)+' 発行済みをZIPで一括DL'+(issued?'（'+issued+'件）':'')+'</button>'
     +'<button class="btn sm primary" onclick="sendAllReceipts(\''+e.id+'\')">未送信を一括発行・送信</button></div></div>'
-    +'<div class="hint" style="margin-bottom:10px">領収書はPNG画像を<b>メールに添付</b>して送信します（本文には記載しません）。番号は発行順の連番（IS-E00001）で、発行後に宛名・金額・但書を変更すると次回送信時に IS-E00001-1 の形式で「（再）」として再発行されます。<br>'
+    +'<div class="hint" style="margin-bottom:10px">領収書はPNG画像を<b>メールに添付</b>して送信します（本文には記載しません）。番号は発行順の連番（IS-E00001）で、発行後に宛名・金額・但書を変更すると次回送信時に IS-E00001-1 の形式で「（再）」として再発行されます。<b>キャンセルされた方でも入金がある場合は発行対象として残ります。</b><br>'
     +'<b>「申込グループで自動まとめ」とは：</b>1つの申込（同じ申込番号）で複数名参加している場合に、代表者1枚に合算した領収書にまとめる機能です。例）3名で申込 → 代表者宛に3名分合計の1枚を発行し、他2名は0円扱い。個別に分けたい場合は各行の「別会計」にチェックして金額を入れてください。</div>'
     +'<div style="overflow:auto"><table><thead><tr><th>宛名</th><th>金額</th><th>但し書き</th><th>別会計</th><th>送信先</th><th>申込番号</th><th>申込人数</th><th>領収書</th><th>状態</th><th></th></tr></thead><tbody>';
-  ps.forEach(p=>{h+='<tr><td><input value="'+esc(p.receipt.name||p.company||p.name)+'" style="min-width:150px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'name\',this.value)"></td>'
+  ps.forEach(p=>{h+='<tr'+(p.status==='cancel'?' style="background:#fdf6f5"':'')+'><td>'+(p.status==='cancel'?'<div><span class="tag danger">キャンセル'+(p.payStatus==='paid'?'（支払済）':'')+'</span></div>':'')+'<input value="'+esc(p.receipt.name||p.company||p.name)+'" style="min-width:150px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'name\',this.value)"></td>'
     +'<td><input type="number" value="'+(p.receipt.amount??p.amount??0)+'" style="width:100px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'amount\',this.value)"></td>'
     +'<td><input value="'+esc(p.receipt.note||'懇親会費として')+'" style="min-width:130px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'note\',this.value)"></td>'
     +'<td style="text-align:center"><input type="checkbox" '+(p.receipt.split?'checked':'')+' onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'split\',this.checked)" title="別会計"></td>'
@@ -1017,7 +1022,7 @@ function tabReceipts(e){
 /* 発行済み領収書をPNG化してZIPで一括ダウンロード */
 async function downloadReceiptZip(eid){
   const e=getEvent(eid);
-  const ps=orderedParticipants(e).filter(p=>p.receipt.no);
+  const ps=(e.participants||[]).filter(p=>p.receipt.no); // キャンセル済みでも発行済み領収書はZIPに含める
   if(!ps.length){alert('発行済みの領収書がありません（「発行・送信」または一括発行を先に行ってください）。');return;}
   if(typeof JSZip==='undefined'||typeof html2canvas==='undefined'){alert('ZIP生成ライブラリが読み込めません。ページを再読み込みしてください。');return;}
   const zip=new JSZip();
@@ -1262,7 +1267,8 @@ async function sendReceipt(eid,pid){
   else alert('送信失敗：'+(r.error||r.status));
 }
 async function sendAllReceipts(eid){
-  const e=getEvent(eid),cand=(e.participants||[]).filter(p=>p.status!=='cancel'&&p.email&&!p.receipt.sentAt&&(p.receipt.amount??p.amount)>0);
+  // キャンセル済みでも支払済みなら発行対象（receiptTargets参照）
+  const e=getEvent(eid),cand=receiptTargets(e).filter(p=>(p.status!=='cancel'||p.payStatus==='paid')&&p.email&&!p.receipt.sentAt&&(p.receipt.amount??p.amount)>0);
   const targets=cand.filter(p=>p.receipt.need!=='不要'); // 領収書「不要」の方は一斉発行から除外（個別の発行・送信は可能）
   const excluded=cand.length-targets.length;
   if(!targets.length){alert('送信対象（未送信・金額あり・領収書不要以外）がありません。'+(excluded?'\n※領収書「不要」の方 '+excluded+'名は除外されています。':''));return;}
