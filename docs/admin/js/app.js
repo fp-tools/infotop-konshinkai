@@ -525,6 +525,12 @@ function applyPayCsv(){
 function reconcileGroupPayments(e){
   let fixed=0;
   const optAmt=l=>{const o=(e.feeOptions||[]).find(x=>x.label===l);return o?Number(o.amount):null;};
+  // 発行済み領収書の金額を変えるときは修正履歴＋再発行フラグを付ける（rcptと同じ扱い）
+  const setRcptAmt=(p,v)=>{
+    if((p.receipt.amount??null)===v)return;
+    if(p.receipt.no){p.receipt.history=p.receipt.history||[];p.receipt.history.push({at:new Date().toISOString(),field:'amount',before:p.receipt.amount,after:v});p.receipt.dirty=true;}
+    p.receipt.amount=v;
+  };
   (e.participants||[]).filter(p=>isMain(p)&&p.status!=='cancel'&&p.payStatus==='paid').forEach(main=>{
     const comps=companionsOf(e,main.id).filter(c=>c.payStatus!=='paid'&&c.payStatus!=='cancel');
     if(!comps.length)return;
@@ -533,16 +539,27 @@ function reconcileGroupPayments(e){
     if(mainUnit==null)mainUnit=Number(e.fee)||0;
     const compUnits=comps.map(c=>{const u=optAmt(c.feeOptLabel);return u!=null?u:(Number(c.amount)>0?Number(c.amount):(Number(e.fee)||0));});
     const needed=mainUnit+compUnits.reduce((s,u)=>s+u,0);
-    if(needed<=0||paidAmt<needed)return; // 全員分をカバーしている場合のみ按分（部分払いは対象外）
+    if(needed<=0||paidAmt<needed)return; // 全員分をカバーしている場合のみ按分（部分払い＝各自別決済のC型は対象外）
     if(Number(main.amount)!==mainUnit){main.paidAmount=main.paidAmount||main.amount;main.amount=mainUnit;}
+    let mergedSum=0; // 申込者の領収書にまとめる分（お連れ様の非分割分）
     comps.forEach((c,i)=>{
       c.payStatus='paid';c.payMethod='代表者決済';
       c.amount=compUnits[i];
       if(main.orderId)c.orderId=main.orderId;
       c.paidAt=main.paidAt||c.paidAt||new Date().toISOString(); // 領収書日付も代表者の注文確定日に揃える
       if(!/代表者.*決済に合算/.test(c.note||''))c.note=(c.note?c.note+' / ':'')+'代表者('+(main.name||'')+'様)の決済に合算';
+      // 領収書: 原則は申込者にまとめる（A）。フォームでお連れ様の領収書指定（別会計）がある場合のみ分ける（B）
+      if(c.receipt.split){
+        if(!(Number(c.receipt.amount)>0))setRcptAmt(c,compUnits[i]);
+      }else{
+        mergedSum+=compUnits[i];
+        setRcptAmt(c,0);
+        if(!/申込者の領収書にまとめ/.test(c.receipt.note||''))c.receipt.note='（申込者の領収書にまとめて発行）';
+      }
       fixed++;
     });
+    // 申込者の領収書金額 = 本人分 ＋ まとめる分（分割指定のお連れ様分は含めない）
+    setRcptAmt(main,mainUnit+mergedSum);
   });
   return fixed;
 }
@@ -1038,7 +1055,7 @@ function tabReceipts(e){
     +'<button class="btn sm" onclick="downloadReceiptZip(\''+e.id+'\')">'+ic('download',14)+' 発行済みをZIPで一括DL'+(issued?'（'+issued+'件）':'')+'</button>'
     +'<button class="btn sm primary" onclick="sendAllReceipts(\''+e.id+'\')">未送信を一括発行・送信</button></div></div>'
     +'<div class="hint" style="margin-bottom:10px">領収書はPNG画像を<b>メールに添付</b>して送信します（本文には記載しません）。番号は発行順の連番（IS-E00001）で、発行後に宛名・金額・但書を変更すると次回送信時に IS-E00001-1 の形式で「（再）」として再発行されます。<b>キャンセルされた方でも入金がある場合は発行対象として残ります。</b><br>'
-    +'<b>「申込グループで自動まとめ」とは：</b>1つの申込（同じ申込番号）で複数名参加している場合に、代表者1枚に合算した領収書にまとめる機能です。例）3名で申込 → 代表者宛に3名分合計の1枚を発行し、他2名は0円扱い。個別に分けたい場合は各行の「別会計」にチェックして金額を入れてください。</div>'
+    +'<b>グループ決済の領収書：</b>代表者がまとめて決済した場合（例: 2名分6,000円）、領収書は<b>原則申込者1枚に合算</b>されます。フォームでお連れ様の領収書指定（別会計）がある場合は自動で分割（各3,000円）。各自が別々に決済した場合はそれぞれに発行されます。手動で分けたい場合は「別会計」にチェックして金額を入れてください。</div>'
     +'<div style="overflow:auto"><table><thead><tr><th>宛名</th><th>金額</th><th>但し書き</th><th>別会計</th><th>送信先</th><th>申込番号</th><th>申込人数</th><th>領収書</th><th>状態</th><th></th></tr></thead><tbody>';
   ps.forEach(p=>{h+='<tr'+(p.status==='cancel'?' style="background:#fdf6f5"':'')+'><td>'+(p.status==='cancel'?'<div><span class="tag danger">キャンセル'+(p.payStatus==='paid'?'（支払済）':'')+'</span></div>':'')+'<input value="'+esc(p.receipt.name||p.company||p.name)+'" style="min-width:150px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'name\',this.value)"></td>'
     +'<td><input type="number" value="'+(p.receipt.amount??p.amount??0)+'" style="width:100px" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'amount\',this.value)"></td>'
