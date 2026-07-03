@@ -228,6 +228,9 @@ function openEventForm(id=null){
     +'<label class="fld"><span>参加費（基本・税込）</span><input id="ef_fee" type="number" min="0" value="'+esc(e.fee)+'" placeholder="例）11000"></label>'
     +'<div class="fld"><span>参加費オプション <span class="hint">（例：1人目無料／早割。受付・領収書で個別選択できます）</span></span><div id="ef_opts">'+optRows+'</div><button type="button" class="btn sm" onclick="addFeeOpt()">'+ic('plus',13)+' オプションを追加</button></div>'
     +'<label class="fld"><span>インフォトップ商品ID <span class="hint">（この開催の決済に使う商品ID。複数ある場合はカンマ区切り。決済同期はここに一致するものだけを対象にします）</span></span><input id="ef_payitems" value="'+esc(e.payItemIds||'')+'" placeholder="例）31830, 31831"></label>'
+    +'<div class="fld"><span>お連れ様の扱い <span class="hint">（フォームCSV/API取込時の動作が変わります）</span></span>'
+    +'<label class="chk" style="margin-right:16px"><input type="radio" name="ef_cmode" value="multi" '+((e.companionMode||'multi')==='multi'?'checked':'')+'> お連れ様あり（1申込で複数名）</label>'
+    +'<label class="chk"><input type="radio" name="ef_cmode" value="single" '+(e.companionMode==='single'?'checked':'')+'> 1申込につき1名まで（お連れ様欄を無視）</label></div>'
     +'<div class="divider"></div>'
     +'<div class="fld"><span>二次会</span><label class="chk"><input type="checkbox" id="ef_sp" '+(e.secondParty?.enabled?'checked':'')+' onchange="document.getElementById(\'spbox\').style.display=this.checked?\'block\':\'none\'"> 二次会あり</label>'
     +'<div id="spbox" style="display:'+(e.secondParty?.enabled?'block':'none')+';margin-top:10px"><label class="chk"><input type="checkbox" id="ef_spfree" '+(e.secondParty?.free?'checked':'')+' onchange="document.getElementById(\'ef_spfee\').disabled=this.checked"> 二次会は無料</label><label class="fld" style="margin-top:8px"><span>二次会 参加費</span><input id="ef_spfee" type="number" min="0" value="'+esc(e.secondParty?.fee||0)+'" '+(e.secondParty?.free?'disabled':'')+'></label></div></div>',
@@ -237,7 +240,8 @@ function feeOptRow(o={label:'',amount:0},i){return '<div class="row feeopt" styl
 function addFeeOpt(){document.getElementById('ef_opts').insertAdjacentHTML('beforeend',feeOptRow());}
 function saveEvent(id){
   const opts=[...document.querySelectorAll('#ef_opts .feeopt')].map(r=>({label:r.querySelector('[data-k=label]').value.trim(),amount:Number(r.querySelector('[data-k=amount]').value)||0})).filter(o=>o.label);
-  const data={name:val('ef_name'),date:val('ef_date'),fee:Number(val('ef_fee'))||0,capacity:val('ef_cap'),venue:val('ef_venue'),target:val('ef_target'),feeOptions:opts,payItemIds:val('ef_payitems').trim(),secondParty:{enabled:chk('ef_sp'),free:chk('ef_spfree'),fee:Number(val('ef_spfee'))||0}};
+  const cmode=(document.querySelector('input[name=ef_cmode]:checked')||{}).value||'multi';
+  const data={name:val('ef_name'),date:val('ef_date'),fee:Number(val('ef_fee'))||0,capacity:val('ef_cap'),venue:val('ef_venue'),target:val('ef_target'),feeOptions:opts,payItemIds:val('ef_payitems').trim(),companionMode:cmode,secondParty:{enabled:chk('ef_sp'),free:chk('ef_spfree'),fee:Number(val('ef_spfee'))||0}};
   if(!data.name){alert('開催名を入力してください');return;}
   if(id){Object.assign(getEvent(id),data);save();closeModal();render();}
   else{store.events.push({id:uid(),...data,participants:[],memos:[],tasks:[],unmatchedPayments:[],createdAt:Date.now()});save();closeModal();go('event',store.events[store.events.length-1].id);}
@@ -267,23 +271,37 @@ function companionsOf(e,mainId){return (e.participants||[]).filter(p=>p.companio
 function isMain(p){return !p.companionOf;}
 function orderedParticipants(e){const out=[];(e.participants||[]).filter(p=>isMain(p)&&p.status!=='cancel').forEach(m=>{out.push(m);companionsOf(e,m.id).forEach(c=>out.push(c));});return out;}
 function extractCompanions(raw){
+  // jcityフォーム実列名（例:【1人目】お連れ様のお名前 /【1人目】領収書の宛名）に対応:
+  // 「お連れ」系マーカー または「◯人目」表記のある列をお連れ様フィールドとして扱う
   const markers=['お連れ','おつれ','連れ','同行','同伴','companion','guest'];const groups={};
-  Object.keys(raw||{}).forEach(k=>{const low=k.toLowerCase();if(!markers.some(m=>k.includes(m)||low.includes(m.toLowerCase())))return;
+  Object.keys(raw||{}).forEach(k=>{const low=k.toLowerCase();
+    const isComp=markers.some(m=>k.includes(m)||low.includes(m.toLowerCase()))||/\d+人目/.test(k);
+    if(!isComp)return;
     const num=(k.match(/(\d+)/)||[])[1]||'1';
-    // 領収書系フィールド（宛名等）が入っている場合は「お連れ様が別決済する」ケースとして扱う
-    const field=/領収書?.*(宛名|名義)|宛名|receipt/i.test(k)?'receiptName':/氏名|name|お名前|名前/i.test(k)?'name':/フリガナ|ふりがな|カナ|kana/i.test(k)?'kana':/会社|屋号|company/i.test(k)?'company':/メール|mail|email/i.test(k)?'email':/電話|tel|phone/i.test(k)?'phone':'name';
+    const field=/領収書?の?有無/i.test(k)?'receiptNeed'
+      :/但し?書/i.test(k)?'receiptNote'
+      :/領収書?の?(宛名|名義)|宛名|receipt/i.test(k)?'receiptName'
+      :/氏名|お名前|名前|name/i.test(k)?'name'
+      :/フリガナ|ふりがな|カナ|kana/i.test(k)?'kana'
+      :/会社|屋号|法人|company/i.test(k)?'company'
+      :/メール|mail|email/i.test(k)?'email'
+      :/電話|tel|phone/i.test(k)?'phone':null;
+    if(!field)return; // 【1】ご活動について 等の自由記入欄は無視
     (groups[num]=groups[num]||{})[field]=raw[k];});
   return Object.values(groups).filter(g=>g.name&&String(g.name).trim());
 }
 function syncCompanions(e,main,comps){
   comps.forEach(c=>{
-    const hasOwnReceipt=!!(c.receiptName&&String(c.receiptName).trim()); // 別決済（別会計）の申込
+    // 別決済（別会計）判定: 領収書の有無が「合算」「不要」でなく、宛名の記載がある場合
+    const need=String(c.receiptNeed||'').trim();
+    const merge=/合算|不要/.test(need); // 「申込者と合算する」→ 代表者の領収書にまとめる
+    const hasOwnReceipt=!merge&&!!(c.receiptName&&String(c.receiptName).trim());
     let ex=e.participants.find(x=>x.companionOf===main.id&&((c.email&&normEmail(x.email)===normEmail(c.email))||x.name===String(c.name).trim()));
     if(ex){['name','kana','company','email','phone'].forEach(f=>{if(c[f]&&!ex.edited.includes(f))ex[f]=String(c[f]).trim();});
-      if(hasOwnReceipt){ex.receipt.split=true;if(!ex.receipt.name||ex.receipt.name===ex.company||ex.receipt.name===ex.name)ex.receipt.name=String(c.receiptName).trim();if(!ex.receipt.amount)ex.receipt.amount=ex.amount;}}
+      if(hasOwnReceipt){ex.receipt.split=true;if(!ex.receipt.name||ex.receipt.name===ex.company||ex.receipt.name===ex.name)ex.receipt.name=String(c.receiptName).trim();if(c.receiptNote)ex.receipt.note=String(c.receiptNote).trim();if(!ex.receipt.amount)ex.receipt.amount=ex.amount;}}
     else{const cp=newParticipant({name:String(c.name).trim(),kana:(c.kana||'').trim(),company:(c.company||main.company||'').trim(),email:(c.email||'').trim(),phone:(c.phone||'').trim(),amount:e.fee||0,companionOf:main.id,groupId:main.groupId||main.id,source:main.source});
-      if(hasOwnReceipt){cp.receipt.split=true;cp.receipt.name=String(c.receiptName).trim();cp.note=(cp.note?cp.note+' / ':'')+'別決済（フォームに領収書情報あり）';}
-      else cp.receipt.name=cp.company||cp.name;
+      if(hasOwnReceipt){cp.receipt.split=true;cp.receipt.name=String(c.receiptName).trim();if(c.receiptNote)cp.receipt.note=String(c.receiptNote).trim();cp.note=(cp.note?cp.note+' / ':'')+'別決済（フォームに領収書情報あり）';}
+      else{cp.receipt.name=cp.company||cp.name;if(/合算/.test(need))cp.note=(cp.note?cp.note+' / ':'')+'領収書は申込者と合算';}
       cp.receipt.amount=cp.amount;e.participants.push(cp);}});
 }
 
@@ -295,19 +313,50 @@ function parseCSV(text){text=text.replace(/^﻿/,'');const rows=[];let i=0,f='',
     i++;}
   if(f.length||row.length){row.push(f);rows.push(row);}
   return rows.filter(r=>r.some(c=>c.trim()!==''));}
-const COLMAP={name:['氏名','名前','お名前','参加者名','name'],kana:['フリガナ','ふりがな','カナ','kana'],company:['会社','会社名','屋号','法人名','company','所属'],email:['メール','メールアドレス','email','mail','e-mail','アドレス'],phone:['電話','電話番号','tel','phone','携帯'],amount:['参加費','金額','料金','amount','fee'],groupId:['申込','グループ','申込id','申込番号','order','注文番号']};
+const COLMAP={name:['氏名','お名前','参加者名','名前','name'],kana:['フリガナ','ふりがな','カナ','kana'],company:['会社','会社名','屋号','法人名','company','所属'],email:['メール','メールアドレス','email','mail','e-mail','アドレス'],phone:['電話','電話番号','tel','phone','携帯'],amount:['参加費','金額','料金','amount','fee'],groupId:['申込番号','申込id','order','注文番号','申込','グループ'],receiptName:['領収書の宛名','領収書宛名'],receiptNote:['領収書の但書','領収書の但し書き','但し書き'],receiptNeed:['領収書の有無'],status:['オーダーステータス','ステータス','処理状態']};
 function detectCols(header){const idx={};header.forEach((h,i)=>{const hh=h.trim().toLowerCase();for(const key in COLMAP){if(idx[key]!=null)continue;if(COLMAP[key].some(k=>hh.includes(k.toLowerCase())))idx[key]=i;}});return idx;}
 function openCSVImport(eid){
   modal('CSV取込（フォーム参加者リスト）','<div class="banner">フォームから出力したCSVを取り込みます。<b>取込後に編集した項目は、再アップロードしても上書きされません</b>（メールアドレスをキーに照合）。</div><label class="fld"><span>CSVファイルを選択</span><input type="file" id="csvFile" accept=".csv,text/csv"></label><div id="csvPreview"></div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],620);
   document.getElementById('csvFile').addEventListener('change',ev=>{const file=ev.target.files[0];if(!file)return;const rd=new FileReader();rd.onload=()=>previewCSV(eid,rd.result);rd.readAsText(file,'UTF-8');});
 }
-let _csvStaging=null;
+let _csvStaging=null,_csvRaw=null;
 function previewCSV(eid,text){
   const rows=parseCSV(text);if(rows.length<2){document.getElementById('csvPreview').innerHTML='<p class="hint">データ行が見つかりません。</p>';return;}
-  const header=rows[0],idx=detectCols(header);
-  const recs=rows.slice(1).map(r=>{const o={raw:{}};header.forEach((h,i)=>o.raw[h.trim()]=r[i]??'');
+  const header=rows[0].map(h=>String(h||'').trim());
+  _csvRaw={eid,header,rows};
+  const idx=detectCols(header);
+  // フィールド名で照合し、必須項目（氏名・メール）が見つからない場合は列の対応付けUIを表示
+  if(idx.name==null||idx.email==null){renderColMapper(idx);return;}
+  buildCsvPreview(idx);
+}
+/* 列名の自動認識に失敗した場合の手動マッピングUI（フィールドの並び・名称が異なるフォームに対応） */
+function renderColMapper(idx){
+  const {header}=_csvRaw;
+  const FIELDS=[['name','氏名 <b>（必須）</b>'],['email','メールアドレス <b>（必須）</b>'],['kana','フリガナ'],['company','会社・法人名'],['phone','電話番号'],['amount','参加費'],['groupId','申込番号'],['receiptName','領収書の宛名'],['receiptNote','領収書の但書'],['receiptNeed','領収書の有無'],['status','オーダーステータス（キャンセル除外用）']];
+  const opts=sel=>'<option value="">（対応する列なし）</option>'+header.map((h,i)=>'<option value="'+i+'"'+(sel===i?' selected':'')+'>'+esc(h||('列'+(i+1)))+'</option>').join('');
+  document.getElementById('csvPreview').innerHTML='<div class="divider"></div><div class="banner">列名を自動認識できなかった項目があります。このフォームのCSV列との対応を選択してください（選択した対応で取り込みます）。</div>'
+    +'<div class="row">'+FIELDS.map(([k,l])=>'<label class="fld" style="flex:1;min-width:220px"><span>'+l+'</span><select id="map_'+k+'">'+opts(idx[k]!=null?idx[k]:null)+'</select></label>').join('')+'</div>'
+    +'<button class="btn primary" onclick="applyColMap()">この対応でプレビュー</button>';
+}
+function applyColMap(){
+  const idx={};
+  ['name','email','kana','company','phone','amount','groupId','receiptName','receiptNote','receiptNeed','status'].forEach(k=>{const v=val('map_'+k);idx[k]=v===''?null:Number(v);});
+  if(idx.name==null||idx.email==null){alert('「氏名」と「メールアドレス」の列は必ず選択してください。');return;}
+  buildCsvPreview(idx);
+}
+function buildCsvPreview(idx){
+  const {eid,header,rows}=_csvRaw;
+  let skipped=0;
+  const recs=rows.slice(1).filter(r=>{
+    // オーダーステータス/処理状態がキャンセル・取消・無効の行は取り込まない
+    if(idx.status!=null&&/キャンセル|取消|無効/.test(String(r[idx.status]||''))){skipped++;return false;}
+    return true;
+  }).map(r=>{const o={raw:{}};header.forEach((h,i)=>o.raw[h.trim()]=r[i]??'');
     o.name=(idx.name!=null?r[idx.name]:'').trim();o.kana=(idx.kana!=null?r[idx.kana]:'').trim();o.company=(idx.company!=null?r[idx.company]:'').trim();o.email=(idx.email!=null?r[idx.email]:'').trim();o.phone=(idx.phone!=null?r[idx.phone]:'').trim();
-    o.amount=idx.amount!=null&&r[idx.amount]!==''?Number(String(r[idx.amount]).replace(/[^\d.-]/g,'')):null;o.groupId=(idx.groupId!=null?r[idx.groupId]:'').trim();return o;});
+    o.amount=idx.amount!=null&&r[idx.amount]!==''?Number(String(r[idx.amount]).replace(/[^\d.-]/g,'')):null;o.groupId=(idx.groupId!=null?r[idx.groupId]:'').trim();
+    o.receiptName=(idx.receiptName!=null?r[idx.receiptName]:'').trim();o.receiptNote=(idx.receiptNote!=null?r[idx.receiptNote]:'').trim();o.receiptNeed=(idx.receiptNeed!=null?r[idx.receiptNeed]:'').trim();
+    return o;});
+  window._csvSkipped=skipped;
   _csvStaging={eid,recs};const e=getEvent(eid);
   const labels={name:'氏名',kana:'フリガナ',company:'会社',email:'メール',phone:'電話',amount:'参加費',groupId:'申込ID'};
   const mapInfo=Object.keys(labels).filter(k=>idx[k]!=null).map(k=>'<span class="tag gray">'+labels[k]+'→'+esc(header[idx[k]])+'</span>').join(' ');
@@ -318,11 +367,19 @@ function previewCSV(eid,text){
 function applyImport(){
   const {eid,recs}=_csvStaging;const e=getEvent(eid);e.participants=e.participants||[];let nw=0,upd=0;
   let comp=0;
+  // フォームの領収書情報（宛名・但書・有無）を参加者の領収書欄に反映する
+  const applyReceiptInfo=(p,r)=>{
+    if(r.receiptName&&(!p.receipt.name||p.receipt.name===p.company||p.receipt.name===p.name))p.receipt.name=r.receiptName;
+    if(r.receiptNote&&(!p.receipt.note||p.receipt.note==='懇親会費として'))p.receipt.note=r.receiptNote;
+    if(/不要/.test(r.receiptNeed||'')&&!/領収書不要/.test(p.note||''))p.note=(p.note?p.note+' / ':'')+'領収書不要（フォーム回答）';
+  };
   recs.forEach(r=>{let main;const m=r.email&&e.participants.find(p=>isMain(p)&&p.email&&p.email.toLowerCase()===r.email.toLowerCase());
-    if(m){['name','kana','company','phone','amount'].forEach(f=>{if(!m.edited.includes(f)&&r[f]!=null&&r[f]!=='')m[f]=r[f];});if(!m.edited.includes('groupId')&&r.groupId)m.groupId=r.groupId;if(r.orderId&&!m.orderId){m.orderId=r.orderId;m.payStatus='paid';m.payMethod='オンライン';}m.raw=r.raw;ensurePerson(m,e);main=m;upd++;}
-    else{const p=newParticipant({name:r.name,kana:r.kana,company:r.company,email:r.email,phone:r.phone,amount:r.amount!=null?r.amount:(e.fee||0),groupId:r.groupId,source:'csv',raw:r.raw});if(r.orderId){p.orderId=r.orderId;p.payStatus='paid';p.payMethod='オンライン';}p.receipt.name=r.company||r.name;p.receipt.amount=p.amount;ensurePerson(p,e);e.participants.push(p);main=p;nw++;}
-    const comps=extractCompanions(r.raw);if(comps.length){const before=e.participants.length;syncCompanions(e,main,comps);comp+=e.participants.length-before;}});
-  save();closeModal();render();setTimeout(()=>alert('取込完了：申込者 新規'+nw+' / 更新'+upd+(comp?(' / お連れ様 新規'+comp):'')),50);
+    if(m){['name','kana','company','phone','amount'].forEach(f=>{if(!m.edited.includes(f)&&r[f]!=null&&r[f]!=='')m[f]=r[f];});if(!m.edited.includes('groupId')&&r.groupId)m.groupId=r.groupId;if(r.orderId&&!m.orderId){m.orderId=r.orderId;m.payStatus='paid';m.payMethod='オンライン';}m.raw=r.raw;applyReceiptInfo(m,r);ensurePerson(m,e);main=m;upd++;}
+    else{const p=newParticipant({name:r.name,kana:r.kana,company:r.company,email:r.email,phone:r.phone,amount:r.amount!=null?r.amount:(e.fee||0),groupId:r.groupId,source:'csv',raw:r.raw});if(r.orderId){p.orderId=r.orderId;p.payStatus='paid';p.payMethod='オンライン';}p.receipt.name=r.company||r.name;p.receipt.amount=p.amount;applyReceiptInfo(p,r);ensurePerson(p,e);e.participants.push(p);main=p;nw++;}
+    // 「1申込につき1名まで」のイベントではお連れ様欄を無視する
+    if(e.companionMode!=='single'){const comps=extractCompanions(r.raw);if(comps.length){const before=e.participants.length;syncCompanions(e,main,comps);comp+=e.participants.length-before;}}});
+  const skipped=window._csvSkipped||0;window._csvSkipped=0;
+  save();closeModal();render();setTimeout(()=>alert('取込完了：申込者 新規'+nw+' / 更新'+upd+(comp?(' / お連れ様 新規'+comp):'')+(skipped?(' / キャンセル等スキップ'+skipped):'')),50);
 }
 
 /* ---------- People master ---------- */
@@ -352,7 +409,7 @@ async function importFromApi(eid){
   let data;try{const res=await fetch(s.formApiUrl,{headers:s.formApiToken?{'Authorization':'Bearer '+s.formApiToken}:{}});if(!res.ok)throw new Error('HTTP '+res.status);data=await res.json();}catch(err){alert('API取得に失敗しました：'+err+'\n（CORS設定やトークンをご確認ください）');return;}
   const arr=Array.isArray(data)?data:(data.items||data.data||data.records||[]);if(!arr.length){alert('データが空でした。');return;}
   const pick=(o,keys)=>{for(const k of keys){for(const kk in o){if(kk.toLowerCase()===k)return o[kk];}}return '';};
-  const recs=arr.map(o=>({name:pick(o,['name','氏名','名前','username']),kana:pick(o,['kana','フリガナ']),company:pick(o,['company','会社','会社名','屋号']),email:pick(o,['email','mail','usermail','メール','メールアドレス']),phone:pick(o,['phone','tel','電話','電話番号']),amount:Number(String(pick(o,['amount','参加費','金額','price'])||'').replace(/[^\d.-]/g,''))||null,groupId:String(pick(o,['申込番号','order','orderid','注文id','申込id','groupid','no'])||''),orderId:String(pick(o,['order','orderid','注文id'])||''),raw:o}));
+  const recs=arr.map(o=>({name:pick(o,['name','氏名','名前','username']),kana:pick(o,['kana','フリガナ']),company:pick(o,['company','会社','会社名','屋号']),email:pick(o,['email','mail','usermail','メール','メールアドレス']),phone:pick(o,['phone','tel','電話','電話番号']),amount:Number(String(pick(o,['amount','参加費','金額','price'])||'').replace(/[^\d.-]/g,''))||null,groupId:String(pick(o,['申込番号','order','orderid','注文id','申込id','groupid','no'])||''),orderId:String(pick(o,['order','orderid','注文id'])||''),receiptName:String(pick(o,['領収書の宛名','領収書宛名'])||'').trim(),receiptNote:String(pick(o,['領収書の但書','領収書の但し書き'])||'').trim(),receiptNeed:String(pick(o,['領収書の有無'])||'').trim(),raw:o}));
   _csvStaging={eid,recs};const e=getEvent(eid);let nw=0,upd=0;
   recs.forEach(r=>{const m=r.email&&(e.participants||[]).find(p=>normEmail(p.email)===normEmail(r.email));if(m)upd++;else nw++;});
   if(!confirm('フォームAPIから '+recs.length+'件 取得しました。\n新規 '+nw+' / 既存一致 '+upd+'（編集項目は保持）。取り込みますか？'))return;
