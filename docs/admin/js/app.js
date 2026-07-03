@@ -385,7 +385,7 @@ function buildCsvPreview(idx){
     o.appliedAt=(idx.appliedAt!=null?r[idx.appliedAt]:'').trim();
     return o;});
   window._csvSkipped=skipped;
-  _csvStaging={eid,recs};const e=getEvent(eid);
+  _csvStaging={eid,recs,src:'csv'};const e=getEvent(eid);
   const labels={name:'氏名',kana:'フリガナ',company:'会社',email:'メール',phone:'電話',amount:'参加費',groupId:'申込ID'};
   const mapInfo=Object.keys(labels).filter(k=>idx[k]!=null).map(k=>'<span class="tag gray">'+labels[k]+'→'+esc(header[idx[k]])+'</span>').join(' ');
   let nw=0,upd=0;const existing=e.participants||[];
@@ -393,8 +393,9 @@ function buildCsvPreview(idx){
   document.getElementById('csvPreview').innerHTML='<div class="divider"></div><div style="margin-bottom:8px"><b>'+recs.length+'件</b> を検出　'+(mapInfo||'<span class="hint">列を自動認識できませんでした</span>')+'</div><div class="row" style="margin-bottom:10px">'+stat('新規追加',nw+'件','')+stat('既存と一致',upd+'件','編集項目は保持')+'</div><div class="card" style="max-height:200px;overflow:auto"><table><thead><tr><th>氏名</th><th>会社</th><th>メール</th><th>参加費</th></tr></thead><tbody>'+recs.slice(0,40).map(r=>'<tr><td>'+esc(r.name)+'</td><td>'+esc(r.company)+'</td><td>'+esc(r.email)+'</td><td>'+(r.amount!=null?yen(r.amount):'-')+'</td></tr>').join('')+'</tbody></table></div>'+(recs.length>40?'<div class="hint">ほか '+(recs.length-40)+' 件…</div>':'')+'<div style="margin-top:14px;text-align:right"><button class="btn primary" onclick="applyImport()">この内容で取り込む</button></div>';
 }
 function applyImport(){
-  const {eid,recs}=_csvStaging;const e=getEvent(eid);e.participants=e.participants||[];let nw=0,upd=0;
+  const {eid,recs,src}=_csvStaging;const e=getEvent(eid);e.participants=e.participants||[];let nw=0,upd=0;
   let comp=0;
+  const beforeIds=new Set(e.participants.map(p=>p.id));
   // フォームの領収書情報（宛名・但書・有無）を参加者の領収書欄に反映する
   const applyReceiptInfo=(p,r)=>{
     if(r.receiptName&&(!p.receipt.name||p.receipt.name===p.company||p.receipt.name===p.name))p.receipt.name=r.receiptName;
@@ -408,7 +409,112 @@ function applyImport(){
     // 「1申込につき1名まで」のイベントではお連れ様欄を無視する
     if(e.companionMode!=='single'){const comps=extractCompanions(r.raw);if(comps.length){const before=e.participants.length;syncCompanions(e,main,comps);comp+=e.participants.length-before;}}});
   const skipped=window._csvSkipped||0;window._csvSkipped=0;
-  save();closeModal();render();setTimeout(()=>alert('取込完了：申込者 新規'+nw+' / 更新'+upd+(comp?(' / お連れ様 新規'+comp):'')+(skipped?(' / キャンセル等スキップ'+skipped):'')),50);
+  save();closeModal();render();
+  const summary='取込完了：申込者 新規'+nw+' / 更新'+upd+(comp?(' / お連れ様 新規'+comp):'')+(skipped?(' / キャンセル等スキップ'+skipped):'');
+  // CSV取込は自動送信の対象外だが、取込完了時に自動返信メールを送るか選択できる
+  const newWithMail=e.participants.filter(p=>!beforeIds.has(p.id)&&p.email&&p.status!=='cancel');
+  if(src==='csv'&&newWithMail.length){
+    window._pendingAR={eid,ids:newWithMail.map(p=>p.id)};
+    setTimeout(()=>{
+      modal('取込完了','<p style="margin:0 0 14px">'+esc(summary)+'</p>'
+        +'<div class="banner">新規追加された <b>'+newWithMail.length+'名</b>（メールアドレスあり）に<b>自動返信メール（受付QRコード付き）</b>を送信しますか？<br><span class="hint">内容は「メール・メール履歴」タブの「自動返信メール作成」で編集できます。API取込時に自動送信されるものと同じメールです。</span></div>',
+        [{label:'送信しない',cls:'btn',on:'closeModal()'},{label:'自動返信メールを送信する（'+newWithMail.length+'名）',cls:'btn primary',on:'closeModal();sendAutoReplyTo(window._pendingAR.eid,window._pendingAR.ids)'}],560);
+    },60);
+  }else setTimeout(()=>alert(summary),50);
+}
+
+/* ---------- 申込管理シート（スプレッドシート）取込: 決済状況の反映 ----------
+ * 構造: E8:P8がヘッダー（E=申込番号, M=決済, N〜P=注文ID/決済額/注文確定日）、データはE9以下。
+ * 申込番号（=フォームの申込番号=参加者のgroupId）をキーに申込者（お連れ様は対象外）へ反映。
+ * 領収書に記載する日付は「注文確定日」を使用（p.paidAtに保存され券面の日付になる）。 */
+let _payCsvStaging=null;
+function openPayCsvImport(eid){
+  modal('申込管理シート取込（決済状況の反映）',
+    '<div class="banner">スプレッドシート「申込管理」からダウンロードしたCSVを取り込みます。<b>申込番号（E列）</b>をキーに、決済ステータス（M列）・注文ID・決済額・<b>注文確定日（領収書の日付に使用）</b>を参加者リストへ反映します。決済APIを受け取れなかった場合のバックアップ手段です。</div>'
+    +'<label class="fld"><span>CSVファイルを選択</span><input type="file" id="payCsvFile" accept=".csv,text/csv"></label><div id="payCsvPreview"></div>',
+    [{label:'閉じる',cls:'btn',on:'closeModal()'}],660);
+  document.getElementById('payCsvFile').addEventListener('change',ev=>{
+    const file=ev.target.files[0];if(!file)return;
+    const rd=new FileReader();
+    rd.onload=()=>{
+      const buf=rd.result;
+      const score=t=>{const h=t.slice(0,4000);let s=0;['申込','決済','注文','氏名'].forEach(k=>{if(h.includes(k))s++;});if(h.includes('�'))s-=5;return s;};
+      let sjis='',utf='';
+      try{sjis=new TextDecoder('shift-jis').decode(buf);}catch(err){}
+      try{utf=new TextDecoder('utf-8').decode(buf);}catch(err){}
+      previewPayCsv(eid,score(sjis)>score(utf)?sjis:utf);
+    };
+    rd.readAsArrayBuffer(file);
+  });
+}
+function mapSheetStatus(s){
+  s=String(s||'').trim();if(!s)return '';
+  if(/キャンセル|取消/.test(s))return 'cancel';
+  if(/当日/.test(s))return 'onsite';
+  if(/未/.test(s))return 'unpaid';
+  if(/済|完了|入金|支払/.test(s))return 'paid';
+  return '';
+}
+function parseSheetDate(v,e){
+  v=String(v||'').trim();if(!v)return '';
+  const pad=n=>String(n).padStart(2,'0');
+  let m=v.match(/(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
+  if(m)return m[1]+'-'+pad(m[2])+'-'+pad(m[3]);
+  m=v.match(/(\d{1,2})[\/\-月](\d{1,2})/);
+  if(m){const y=(e.date||todayISO()).slice(0,4);return y+'-'+pad(m[1])+'-'+pad(m[2]);} // 年なし（6/19等）は開催年で補完
+  return '';
+}
+function previewPayCsv(eid,text){
+  const box=document.getElementById('payCsvPreview');
+  const rows=parseCSV(text);
+  // ヘッダー行: E列（index4）に「申込番号」がある行（改行入り「申込\n番号」にも対応）
+  const hi=rows.findIndex(r=>/申込\s*番号/.test(String(r[4]||'').replace(/[\r\n]/g,'')));
+  if(hi<0){box.innerHTML='<p class="hint" style="color:var(--danger)">E列に「申込番号」のヘッダーが見つかりません。「申込管理」シートのCSVかご確認ください。</p>';return;}
+  const header=rows[hi];
+  const col={no:4,status:12,order:null,amount:null,date:null};
+  for(let i=5;i<header.length&&i<=20;i++){
+    const h=String(header[i]||'').replace(/[\s\r\n]/g,'');
+    if(/注文ID|オーダーID/i.test(h))col.order=i;
+    else if(/決済額|決済金額/.test(h))col.amount=i;
+    else if(/確定日|決済日|入金日/.test(h))col.date=i;
+  }
+  const e=getEvent(eid);
+  const recs=[];
+  for(let ri=hi+1;ri<rows.length;ri++){
+    const r=rows[ri]||[];const no=String(r[4]||'').trim();
+    if(!no||!/\d/.test(no))continue;
+    recs.push({no,status:String(r[col.status]||'').trim(),order:col.order!=null?String(r[col.order]||'').trim():'',
+      amount:col.amount!=null?(Number(String(r[col.amount]||'').replace(/[^\d.-]/g,''))||0):0,
+      date:col.date!=null?String(r[col.date]||'').trim():''});
+  }
+  if(!recs.length){box.innerHTML='<p class="hint">データ行が見つかりません。</p>';return;}
+  const mains=(e.participants||[]).filter(isMain);
+  recs.forEach(rec=>{rec.p=mains.find(p=>String(p.groupId||'').trim()===rec.no)||null;});
+  const matched=recs.filter(r=>r.p),unmatched=recs.filter(r=>!r.p);
+  const stCount={};matched.forEach(r=>{const k=r.status||'(空欄)';stCount[k]=(stCount[k]||0)+1;});
+  _payCsvStaging={eid,recs};
+  box.innerHTML='<div class="divider"></div><div style="margin-bottom:8px"><b>'+recs.length+'件</b>を検出 → 参加者と一致 <b>'+matched.length+'件</b>'+(unmatched.length?' / <span style="color:var(--danger)">不一致 '+unmatched.length+'件（申込番号: '+esc(unmatched.map(r=>r.no).join(', '))+'）</span>':'')+'</div>'
+    +'<div class="hint" style="margin-bottom:8px">ステータス内訳: '+Object.keys(stCount).map(k=>esc(k)+' '+stCount[k]+'件').join(' / ')+'</div>'
+    +'<div class="card" style="max-height:220px;overflow:auto"><table><thead><tr><th>申込番号</th><th>参加者</th><th>決済</th><th>注文ID</th><th>決済額</th><th>注文確定日</th></tr></thead><tbody>'
+    +recs.slice(0,50).map(r=>'<tr'+(r.p?'':' style="background:var(--danger-soft)"')+'><td>'+esc(r.no)+'</td><td>'+(r.p?esc(r.p.name):'<span class="hint">一致なし</span>')+'</td><td>'+esc(r.status)+'</td><td>'+esc(r.order)+'</td><td>'+(r.amount?yen(r.amount):'-')+'</td><td>'+esc(r.date)+(r.date?'<span class="hint">→'+esc(parseSheetDate(r.date,e))+'</span>':'')+'</td></tr>').join('')
+    +'</tbody></table></div><div style="margin-top:12px;text-align:right"><button class="btn primary" onclick="applyPayCsv()">一致した'+matched.length+'件を反映する</button></div>';
+}
+function applyPayCsv(){
+  const {eid,recs}=_payCsvStaging||{};if(!recs)return;
+  const e=getEvent(eid);let upd=0;
+  recs.forEach(rec=>{
+    if(!rec.p)return;const p=rec.p;
+    const st=mapSheetStatus(rec.status);
+    if(st){p.payStatus=st;if(st==='paid'&&!p.payMethod)p.payMethod='オンライン';}
+    if(rec.order)p.orderId=rec.order;
+    if(rec.amount>0){p.paidAmount=rec.amount;if(!p.edited.includes('amount'))p.amount=rec.amount;}
+    const d=parseSheetDate(rec.date,e);
+    if(d)p.paidAt=d; // 領収書の日付＝注文確定日
+    else if(st==='paid'&&!p.paidAt)p.paidAt=new Date().toISOString();
+    upd++;
+  });
+  save();closeModal();render();
+  alert(upd+'件の決済状況を反映しました。\n※領収書の日付には注文確定日が使用されます。');
 }
 
 /* ---------- People master ---------- */
@@ -439,7 +545,7 @@ async function importFromApi(eid){
   const arr=Array.isArray(data)?data:(data.items||data.data||data.records||[]);if(!arr.length){alert('データが空でした。');return;}
   const pick=(o,keys)=>{for(const k of keys){for(const kk in o){if(kk.toLowerCase()===k)return o[kk];}}return '';};
   const recs=arr.map(o=>({name:pick(o,['name','氏名','名前','username']),kana:pick(o,['kana','フリガナ']),company:pick(o,['company','会社','会社名','屋号']),email:pick(o,['email','mail','usermail','メール','メールアドレス']),phone:pick(o,['phone','tel','電話','電話番号']),amount:Number(String(pick(o,['amount','参加費','金額','price'])||'').replace(/[^\d.-]/g,''))||null,groupId:String(pick(o,['申込番号','order','orderid','注文id','申込id','groupid','no'])||''),orderId:String(pick(o,['order','orderid','注文id'])||''),receiptName:String(pick(o,['領収書の宛名','領収書宛名'])||'').trim(),receiptNote:String(pick(o,['領収書の但書','領収書の但し書き'])||'').trim(),receiptNeed:String(pick(o,['領収書の有無'])||'').trim(),appliedAt:String(pick(o,['申込日時','created_at','created'])||'').trim(),raw:o}));
-  _csvStaging={eid,recs};const e=getEvent(eid);let nw=0,upd=0;
+  _csvStaging={eid,recs,src:'api'};const e=getEvent(eid);let nw=0,upd=0;
   recs.forEach(r=>{const m=r.email&&(e.participants||[]).find(p=>normEmail(p.email)===normEmail(r.email));if(m)upd++;else nw++;});
   if(!confirm('フォームAPIから '+recs.length+'件 取得しました。\n新規 '+nw+' / 既存一致 '+upd+'（編集項目は保持）。取り込みますか？'))return;
   const before=new Set((e.participants||[]).map(p=>p.id));
@@ -447,23 +553,37 @@ async function importFromApi(eid){
   const newIds=(getEvent(eid).participants||[]).filter(p=>!before.has(p.id)).map(p=>p.id);
   if(newIds.length)setTimeout(()=>autoReplyNew(eid,newIds),400);
 }
-/* フォームAPI取込で新規追加された参加者へ、受付QRコード付きHTMLメールを自動返信する */
-async function autoReplyNew(eid,newIds){
-  const s=store.settings;if(!s.autoReplyOn)return;
-  const e=getEvent(eid);if(!e)return;
-  const targets=(e.participants||[]).filter(p=>newIds.includes(p.id)&&p.email&&p.status!=='cancel');
-  if(!targets.length)return;
-  if(!s.recendUrl){alert('自動返信メールがONですが、recend（Worker）が未設定のため送信できません。設定画面をご確認ください。');return;}
-  if(!confirm('【自動返信】新規取込 '+targets.length+'名へ、受付QRコード付きメールを送信します。よろしいですか？'))return;
-  const subj=s.autoReplySubj||AR_SUBJ_DEFAULT,body=s.autoReplyBody||AR_BODY_DEFAULT;
+/* 自動返信メールのテンプレート: イベント個別設定（メール・メール履歴タブで編集）→ なければ全体設定 */
+function autoReplyTemplate(e){
+  const s=store.settings,ar=e.autoReply||{};
+  return {subj:ar.subj||s.autoReplySubj||AR_SUBJ_DEFAULT,body:ar.body||s.autoReplyBody||AR_BODY_DEFAULT,on:(ar.on!=null?ar.on:!!s.autoReplyOn)};
+}
+/* 指定参加者へ自動返信メール（受付QR付き）を送信する共通処理（確認なしの実行部） */
+async function sendAutoReplyTo(eid,ids){
+  const e=getEvent(eid);if(!e)return false;
+  const targets=(e.participants||[]).filter(p=>ids.includes(p.id)&&p.email&&p.status!=='cancel');
+  if(!targets.length){alert('自動返信の送信先（メールアドレスあり）がありません。');return false;}
+  const {subj,body}=autoReplyTemplate(e);
   const recsM=targets.map(p=>({p,mid:uid()}));
   const messages=recsM.map(({p,mid})=>({to:p.email,subject:mergeBody(subj,e,p),body:mergeText(body,e,p),html:mergeBodyHTML(body,e,p,mid)}));
   const r=await recendSend({type:'reminder',event:{name:e.name,date:e.date,venue:e.venue},messages});
   if(r.ok){
     const res=(r.data&&r.data.results)||[];
     logMail(e,{kind:'自動返信（QR）',subject:subj,body,count:targets.length,status:'sent',recipients:recsM.map(({p,mid},i)=>({to:p.email,name:p.name,pid:p.id,mid,ok:res[i]?!!res[i].ok:true}))});
-    render();alert('自動返信メールを '+targets.length+'件 送信しました（QRコード付き）。');
-  }else alert('自動返信メールの送信に失敗しました：'+(r.error||r.status)+(r.data&&r.data.error?'\n'+r.data.error:''));
+    render();alert('自動返信メールを '+targets.length+'件 送信しました（受付QRコード付き）。');
+    return true;
+  }
+  alert('自動返信メールの送信に失敗しました：'+(r.error||r.status)+(r.data&&r.data.error?'\n'+r.data.error:''));
+  return false;
+}
+/* フォームAPI取込で新規追加された参加者への自動返信（自動送信ONの場合のみ・確認あり） */
+async function autoReplyNew(eid,newIds){
+  const e=getEvent(eid);if(!e)return;
+  if(!autoReplyTemplate(e).on)return;
+  const targets=(e.participants||[]).filter(p=>newIds.includes(p.id)&&p.email&&p.status!=='cancel');
+  if(!targets.length)return;
+  if(!confirm('【自動返信】API取込で新規追加された '+targets.length+'名へ、受付QRコード付きメールを送信します。よろしいですか？'))return;
+  await sendAutoReplyTo(eid,newIds);
 }
 async function syncPayments(eid){
   const s=store.settings;if(!s.payReceiveUrl){alert('設定で「決済受信エンドポイント」を登録してください。\nインフォトップ購入者情報送信API(Webhook)を受けるサーバ側のURLです。');go('settings');return;}
@@ -572,6 +692,7 @@ function tabParticipants(e){
     +'<select style="width:auto;padding:5px 8px;font-size:12px" onchange="setPsort(this.value)"><option value="applied"'+(_psort==='applied'?' selected':'')+'>並び: 申込順</option><option value="kana"'+(_psort==='kana'?' selected':'')+'>並び: 氏名順（ふりがな）</option></select></div><div class="flex">'
     +'<button class="btn sm" onclick="openCSVImport(\''+e.id+'\')">'+ic('upload',14)+' CSV取込</button>'
     +'<button class="btn sm" onclick="importFromApi(\''+e.id+'\')">'+ic('sync',14)+' フォームAPI取込</button>'
+    +'<button class="btn sm" onclick="openPayCsvImport(\''+e.id+'\')" title="申込管理シートのCSVから決済状況・注文確定日を反映">'+ic('cash',14)+' 決済状況シート取込</button>'
     +'<button class="btn sm" onclick="addParticipant(\''+e.id+'\')">'+ic('plus',14)+' 手動追加</button>'
     +'<button class="btn sm" onclick="bulkQR(\''+e.id+'\')">'+ic('qr',14)+' QR一括発行</button>'
     +'<button class="btn sm" onclick="exportParticipants(\''+e.id+'\')">'+ic('download',14)+' CSV出力</button>'
@@ -598,9 +719,9 @@ function tabParticipants(e){
   if(cancels.length)h+='<h2 class="sec">キャンセル（'+cancels.length+'名）<span class="hint" style="font-weight:400">　CSVを再取込しても復活しません</span></h2><div class="card pad">'+cancels.map(p=>'<span class="tag gray" style="margin:2px">'+esc(p.name||'(無名)')+(p.groupId?' #'+esc(p.groupId):'')+' <a href="javascript:restoreP(\''+e.id+'\',\''+p.id+'\')">戻す</a></span>').join(' ')+'</div>';
   return h;
 }
-function addParticipant(eid){const e=getEvent(eid);const p=newParticipant({amount:e.fee||0});p.receipt.amount=e.fee||0;e.participants.push(p);save();editParticipant(eid,p.id);}
-function addCompanion(eid,mainId){const e=getEvent(eid),m=e.participants.find(x=>x.id===mainId);const p=newParticipant({amount:e.fee||0,companionOf:mainId,groupId:m.groupId||m.id,company:m.company,source:'manual',note:'お連れ様'});p.receipt.amount=e.fee||0;e.participants.push(p);save();editParticipant(eid,p.id);}
-function editParticipant(eid,pid){
+function addParticipant(eid){const e=getEvent(eid);const p=newParticipant({amount:e.fee||0});p.receipt.amount=e.fee||0;e.participants.push(p);save();editParticipant(eid,p.id,true);}
+function addCompanion(eid,mainId){const e=getEvent(eid),m=e.participants.find(x=>x.id===mainId);const p=newParticipant({amount:e.fee||0,companionOf:mainId,groupId:m.groupId||m.id,company:m.company,source:'manual',note:'お連れ様'});p.receipt.amount=e.fee||0;e.participants.push(p);save();editParticipant(eid,p.id,true);}
+function editParticipant(eid,pid,isNew){
   const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);
   const optSel='<select id="pf_opt"><option value="">（基本料金 '+yen(e.fee)+'）</option>'+(e.feeOptions||[]).map(o=>'<option value="'+esc(o.label)+'|'+o.amount+'" '+(p.feeOptLabel===o.label?'selected':'')+'>'+esc(o.label)+'：'+yen(o.amount)+'</option>').join('')+'</select>';
   const parent=p.companionOf&&e.participants.find(x=>x.id===p.companionOf);
@@ -612,12 +733,18 @@ function editParticipant(eid,pid){
     +'<div class="row"><label class="fld" style="flex:1"><span>参加費オプション</span>'+optSel+'</label><label class="fld" style="flex:1"><span>参加費（円）</span><input id="pf_amount" type="number" value="'+(p.amount??'')+'"></label></div>'
     +'<div class="row"><label class="fld" style="flex:1"><span>申込番号 <span class="hint">同時申込の紐付け＋領収書ページのログインに使用</span></span><input id="pf_group" value="'+esc(p.groupId)+'" placeholder="例）55981"></label><label class="fld" style="flex:1"><span>二次会</span><br><label class="chk"><input type="checkbox" id="pf_sp" '+(p.secondParty?'checked':'')+'> 二次会に参加</label></label></div>'
     +'<div class="row"><label class="fld" style="flex:1"><span>決済状況</span><select id="pf_paystatus">'
-      +'<option value="unpaid"'+(p.payStatus!=='paid'&&p.payStatus!=='cancel'?' selected':'')+'>未払い</option>'
+      +'<option value="unpaid"'+(p.payStatus!=='paid'&&p.payStatus!=='cancel'&&p.payStatus!=='onsite'?' selected':'')+'>未払い</option>'
+      +'<option value="onsite"'+(p.payStatus==='onsite'?' selected':'')+'>当日予定</option>'
       +'<option value="paid"'+(p.payStatus==='paid'?' selected':'')+'>支払済</option>'
       +'<option value="cancel"'+(p.payStatus==='cancel'?' selected':'')+'>取消</option></select></label>'
     +'<label class="fld" style="flex:1"><span>決済方法</span><select id="pf_paymethod"><option value="">（未設定）</option>'+['オンライン','現金','銀行振込','その他'].map(m=>'<option'+(p.payMethod===m?' selected':'')+'>'+m+'</option>').join('')+'</select></label>'
     +'<label class="fld" style="flex:1"><span>注文ID（任意）</span><input id="pf_order" value="'+esc(p.orderId||'')+'" placeholder="例）10048190"></label></div>'
     +'<label class="fld"><span>備考メモ</span><textarea id="pf_note" rows="2">'+esc(p.note)+'</textarea></label>'
+    // 手動追加時のみ: 自動返信メールを送るか選択（編集での保存は送信対象外）
+    +(isNew?'<div class="fld" style="background:var(--brand-soft);border-radius:9px;padding:10px 12px"><span>自動返信メール（受付QRコード付き）を送信しますか？</span>'
+      +'<label class="chk" style="margin-right:16px"><input type="radio" name="pf_ar" value="no" checked> いいえ</label>'
+      +'<label class="chk"><input type="radio" name="pf_ar" value="yes"> はい（保存時にこの方へ送信）</label>'
+      +'<div class="hint" style="margin-top:4px">「はい」の場合はメールアドレスの入力が必要です。内容は「メール・メール履歴」タブの自動返信メールが使われます。</div></div>':'')
     +'<div class="hint">基本情報を編集すると「編集」が付き、CSV/API再取込でも保持されます。</div>',
     [{label:'この参加者を削除',cls:'btn danger',on:"removeParticipant('"+eid+"','"+pid+"')"},{label:ic('qr',13)+' QR・名札',cls:'btn',on:"saveParticipant('"+eid+"','"+pid+"');showQR('"+eid+"','"+pid+"')"},{label:'保存',cls:'btn primary',on:"saveParticipant('"+eid+"','"+pid+"')"}],600);
   document.getElementById('pf_opt').addEventListener('change',function(){if(this.value){document.getElementById('pf_amount').value=this.value.split('|')[1];}});
@@ -635,7 +762,14 @@ function saveParticipant(eid,pid){
   if(pst==='paid'&&!p.paidAt)p.paidAt=new Date().toISOString();
   const gv=val('pf_group');if(gv!==(p.groupId||'')){p.groupId=gv;if(p.source==='csv'&&!p.edited.includes('groupId'))p.edited.push('groupId');}
   if(!p.receipt.amount)p.receipt.amount=p.amount;if(!p.receipt.name)p.receipt.name=p.company||p.name;
+  // 手動追加時の自動返信選択（モーダルを閉じる前に読む。編集時はラジオ自体が無いため送信されない）
+  const arSel=document.querySelector('input[name=pf_ar]:checked');
+  const wantAR=arSel&&arSel.value==='yes';
   if(p.email)ensurePerson(p,e);save();closeModal();render();
+  if(wantAR){
+    if(!p.email)alert('自動返信メールは「はい」でしたが、メールアドレスが未入力のため送信できませんでした。');
+    else sendAutoReplyTo(eid,[p.id]);
+  }
   // 発行済み領収書があり、申込番号かメールが変わった場合は受取人ページ(KV)のレコードを再同期
   // （受取人ページのログインは「送信時点のメール＋申込番号」で照合されるため）
   if(p.receipt.no&&((p.groupId||'')!==prevGroup||(p.email||'')!==prevEmail)){
@@ -690,7 +824,7 @@ function setAmount(eid,pid,v){const p=getEvent(eid).participants.find(x=>x.id===
 function setReceiptName(eid,pid,v){const p=getEvent(eid).participants.find(x=>x.id===pid);p.receipt.name=v;save();}
 function markCancel(eid,pid){const p=getEvent(eid).participants.find(x=>x.id===pid);p.status='cancel';p.checkedIn=false;p.attended='欠席';save();render();}
 function restoreP(eid,pid){const p=getEvent(eid).participants.find(x=>x.id===pid);p.status='active';save();render();}
-function addWalkin(eid){const e=getEvent(eid);const p=newParticipant({amount:e.fee||0,source:'manual',note:'当日参加'});p.receipt.amount=e.fee||0;e.participants.push(p);save();editParticipant(eid,p.id);}
+function addWalkin(eid){const e=getEvent(eid);const p=newParticipant({amount:e.fee||0,source:'manual',note:'当日参加'});p.receipt.amount=e.fee||0;e.participants.push(p);save();editParticipant(eid,p.id,true);}
 function undoCheckin(eid,pid){const p=getEvent(eid).participants.find(x=>x.id===pid);p.checkedIn=false;p.checkedInAt='';save();render();}
 
 /* ---------- QR scan reception ---------- */
@@ -759,6 +893,7 @@ function calcChange(amount){const recv=Number(val('cashRecv'))||0,ch=recv-amount
 function payBadge(p){
   if(p.payStatus==='paid')return '<span class="tag ok">'+ic('check',11)+' 支払済</span>'+(p.payMethod?'<div class="hint">'+esc(p.payMethod)+(p.orderId?' / '+esc(p.orderId):'')+'</div>':'');
   if(p.payStatus==='cancel')return '<span class="tag gray">取消</span>';
+  if(p.payStatus==='onsite')return '<span class="tag" style="background:#efe9ff;color:#6d28d9">当日予定</span>';
   return '<span class="tag warn">未払い</span>';
 }
 /* クリック可能な決済バッジ（バッジ自体を押すと変更モーダル。ホバーで✎表示） */
@@ -768,7 +903,8 @@ function openPayStatusModal(eid,pid){
   modal('決済状況の変更 - '+esc(p.name||'(無名)'),
     '<div class="hint" style="margin-bottom:12px">決済Webhookを受け取れなかった場合や現地確認できた場合など、決済状況を手動で変更できます。インフォトップの注文IDが分かる場合は入力してください（任意）。</div>'
     +'<label class="fld"><span>決済状況</span><select id="pm_status">'
-      +'<option value="unpaid"'+(p.payStatus!=='paid'&&p.payStatus!=='cancel'?' selected':'')+'>未払い</option>'
+      +'<option value="unpaid"'+(p.payStatus!=='paid'&&p.payStatus!=='cancel'&&p.payStatus!=='onsite'?' selected':'')+'>未払い</option>'
+      +'<option value="onsite"'+(p.payStatus==='onsite'?' selected':'')+'>当日予定（当日支払い）</option>'
       +'<option value="paid"'+(p.payStatus==='paid'?' selected':'')+'>支払済</option>'
       +'<option value="cancel"'+(p.payStatus==='cancel'?' selected':'')+'>取消（決済キャンセル）</option></select></label>'
     +'<label class="fld"><span>決済方法</span><select id="pm_method"><option value="">（未設定）</option>'+['オンライン','現金','銀行振込','その他'].map(m=>'<option'+(p.payMethod===m?' selected':'')+'>'+m+'</option>').join('')+'</select></label>'
@@ -836,8 +972,24 @@ function tabMail(e){
     +'<div class="divider"></div>'
     +'<div class="fld"><span>テスト送信 <span class="hint">上記の件名・本文をこのアドレス宛に1通だけ送ります（参加者には送信されません）</span></span>'
     +'<div class="flex"><input id="rm_test_to" type="email" placeholder="test@example.com" style="max-width:280px"><button class="btn" onclick="sendTestReminder(\''+e.id+'\')">テスト送信</button></div></div></div>';
+  // 自動返信メール作成（API取込での新規追加時に自動送信されるメール。差込タグはメール作成と共通）
+  const ar=autoReplyTemplate(e);
+  h+='<div class="card pad" style="margin-bottom:16px"><div class="between" style="margin-bottom:6px"><b>'+ic('sync',16)+' 自動返信メール作成</b><label class="chk" style="margin:0"><input type="checkbox" id="ar_on" '+(ar.on?'checked':'')+'> フォームAPI取込時に自動送信する</label></div>'
+    +'<div class="hint" style="margin-bottom:12px">フォームAPI取込で参加者リストが増えたときに自動送信されるメールです（受付QRコード付き）。<b>CSV取込時</b>は取込完了後に送信するか選択でき、<b>手動追加時</b>は追加画面の「はい/いいえ」で選択します（編集での保存は送信されません）。差込タグ：{{name}} {{event}} {{date}} {{venue}} {{amount}} {{qr}}</div>'
+    +'<label class="fld"><span>件名</span><input id="ar_subj" value="'+esc(ar.subj)+'"></label>'
+    +'<label class="fld"><span>本文</span><textarea id="ar_body" rows="9">'+esc(ar.body)+'</textarea></label>'
+    +'<div class="flex"><button class="btn primary" onclick="saveAutoReply(\''+e.id+'\')">自動返信メールを保存</button><button class="btn" onclick="previewAutoReply(\''+e.id+'\')">プレビュー</button></div></div>';
   h+='<h2 class="sec">メール履歴</h2>'+tabMailLog(e);
   return h;
+}
+function saveAutoReply(eid){
+  const e=getEvent(eid);
+  e.autoReply={on:chk('ar_on'),subj:val('ar_subj')||AR_SUBJ_DEFAULT,body:document.getElementById('ar_body').value||AR_BODY_DEFAULT};
+  save();alert('自動返信メールを保存しました'+(e.autoReply.on?'（API取込時に自動送信されます）':'（自動送信はOFFです）')+'。');
+}
+function previewAutoReply(eid){
+  const e=getEvent(eid),p=(e.participants||[]).find(x=>x.status!=='cancel')||newParticipant({name:'テスト太郎'});
+  modal('自動返信メール プレビュー','<div class="card pad" style="font-size:13px"><div style="margin-bottom:10px"><b>件名：</b>'+esc(mergeBody(val('ar_subj'),e,p))+'</div><div class="divider"></div>'+mergeBodyHTML(document.getElementById('ar_body').value,e,p,'')+'</div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],640);
 }
 /* ---------- Tab: 領収書発行 ---------- */
 function tabReceipts(e){
@@ -1457,13 +1609,23 @@ function renderMemo(e,b){
   if(!ps.length){b.innerHTML=h+emptyState(ic('tree',40),'参加者がいません','「参加者リスト」でCSV/API取込か手動追加すると、ここで情報共有できます。','');return;}
   h+='<div class="between" style="margin-bottom:10px"><b>参加者 情報共有（'+ps.length+'名）</b><span class="hint">種別・メモは自動保存</span></div>';
   h+='<datalist id="ptypes"><option value="販売者"></option><option value="アフィリエイター"></option><option value="関係者"></option><option value="ゲスト"></option><option value="登壇者"></option><option value="その他"></option></datalist>';
-  h+='<div class="card" style="overflow:auto"><table><thead><tr><th>氏名</th><th>会社・屋号</th><th>メール</th><th>種別</th><th>過去参加</th><th>引継ぎメモ（共有）</th><th>紐づけ</th></tr></thead><tbody>';
+  h+='<div class="card" style="overflow:visible"><table><thead><tr><th>会社・屋号</th><th>氏名</th><th>種別</th><th>過去参加</th><th>引継ぎメモ（共有）</th><th>紐づけ</th></tr></thead><tbody>';
   ps.forEach(p=>{const person=p.personId&&store.people.find(x=>x.id===p.personId);const hist=person?(person.history||[]).filter(hh=>hh.eventId!==e.id):[];const cands=linkCandidates(p);const altNames=person?person.names.filter(n=>n&&n!==p.name):[];const altCos=person?person.companies.filter(c=>c&&c!==p.company):[];
-    h+='<tr><td><b>'+esc(p.name)+'</b>'+(p.kana?'<div class="hint">'+esc(p.kana)+'</div>':'')+(altNames.length?'<div class="hint">別名: '+esc(altNames.join(' / '))+'</div>':'')+'</td>'
-      +'<td>'+(esc(p.company)||'-')+(altCos.length?'<div class="hint">他: '+esc(altCos.join(' / '))+'</div>':'')+'</td>'
-      +'<td>'+(esc(p.email)||'-')+'</td>'
+    // 過去参加: 2回目以降は「N回目」表記。ホバーで過去履歴のポップオーバーを表示し、開催名クリックでその回の情報共有メモへ移動
+    const sortedHist=hist.slice().sort((a,bb)=>String(bb.date||'').localeCompare(String(a.date||'')));
+    let histCell;
+    if(!hist.length)histCell='<span class="hint">初参加</span>';
+    else{
+      const links=sortedHist.map(hh=>{
+        const label=esc(hh.name||'(無題)')+(hh.date?'<span class="hint">（'+esc(hh.date)+'）</span>':'');
+        return getEvent(hh.eventId)?'<a href="javascript:go(\'event\',\''+hh.eventId+'\',\'memo\')">'+label+'</a>':'<div style="padding:5px 6px;font-size:12.5px;color:var(--sub)">'+label+'<span class="hint">（削除済み）</span></div>';
+      }).join('');
+      histCell='<span class="popwrap"><span class="tag brand" style="cursor:pointer">'+(hist.length+1)+'回目</span><div class="popover"><div style="font-size:11px;color:var(--sub);font-weight:700;margin-bottom:6px">過去の参加履歴（クリックでその回のメモへ）</div>'+links+'</div></span>';
+    }
+    h+='<tr><td>'+(esc(p.company)||'-')+(altCos.length?'<div class="hint">他: '+esc(altCos.join(' / '))+'</div>':'')+'</td>'
+      +'<td><b>'+esc(p.name)+'</b>'+(p.kana?'<div class="hint">'+esc(p.kana)+'</div>':'')+(altNames.length?'<div class="hint">別名: '+esc(altNames.join(' / '))+'</div>':'')+'</td>'
       +'<td><input list="ptypes" value="'+esc(p.ptype||'')+'" style="width:115px" onchange="setPtype(\''+e.id+'\',\''+p.id+'\',this.value)" placeholder="種別"></td>'
-      +'<td>'+(hist.length?'<span class="tag brand">'+hist.length+'回</span><div class="hint">'+esc(hist.map(hh=>hh.date||hh.name).join(', '))+'</div>':'<span class="hint">初参加</span>')+'</td>'
+      +'<td>'+histCell+'</td>'
       +'<td><textarea rows="2" style="min-width:240px" onchange="setPersonNote(\''+e.id+'\',\''+p.id+'\',this.value)" placeholder="VIP対応・関係性・注意点など（マスターに共有保存）">'+esc(person?person.note:'')+'</textarea></td>'
       +'<td>'+(cands.length?'<button class="btn sm warn" onclick="showCandidates(\''+e.id+'\',\''+p.id+'\')">候補 '+cands.length+'</button>':'<span class="hint">-</span>')+'</td></tr>';});
   b.innerHTML=h+'</tbody></table></div>';

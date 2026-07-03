@@ -110,3 +110,10 @@ svg{flex:none}
 .paybadge-btn{cursor:pointer;display:inline-block;border-radius:8px;padding:2px 4px;margin:-2px -4px;transition:background .12s}
 .paybadge-btn:hover{background:#eef1f6;box-shadow:0 0 0 1px var(--line)}
 .paybadge-btn:hover::after{content:" ✎ 変更";color:var(--brand);font-size:11px;font-weight:600;white-space:nowrap}
+
+/* ホバーで開く小型ポップオーバー（過去参加履歴など） */
+.popwrap{position:relative;display:inline-block}
+.popwrap .popover{display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 24px rgba(20,30,50,.16);padding:10px 12px;z-index:80;min-width:240px;max-height:260px;overflow:auto}
+.popwrap:hover .popover{display:block}
+.popover a{display:block;padding:5px 6px;border-radius:6px;font-size:12.5px;color:var(--ink)}
+.popover a:hover{background:var(--brand-soft);color:var(--brand-d)}
