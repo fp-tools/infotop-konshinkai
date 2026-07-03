@@ -404,6 +404,29 @@ export default {
       return jres({ ok: true, token, expiresIn: 60 * 60 * 12 });
     }
 
+    // --- 受取人: 修正後の領収書PNGを決済時（登録）のメールアドレスへ送信 ---
+    // 認証は claim と同じ「メール＋申込番号」の照合。宛先はレコード側のメール固定（任意アドレスへは送れない）
+    if (request.method === 'POST' && path === '/claim/mail') {
+      if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);
+      let body;
+      try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
+      const email = normMail(body.email), orderNo = normNo(body.orderNo), no = normNo(body.no);
+      const v = no ? await env.MAILLOG.get('rcpt:' + no) : null;
+      let rec = null;
+      try { rec = v ? JSON.parse(v) : null; } catch (e) {}
+      if (!claimMatch(rec, email, orderNo)) return jres({ ok: false, error: '対象の領収書が見つかりません' }, 404);
+      const png = String(body.png || '');
+      if (!png || png.length > 3 * 1024 * 1024) return jres({ ok: false, error: '領収書画像がありません' }, 400);
+      const html = '<div style="font-family:\'Hiragino Kaku Gothic ProN\',\'Yu Gothic\',Meiryo,sans-serif;font-size:13px;line-height:1.9;color:#1f2733">'
+        + escHtml(rec.addressee || '') + ' 様<br><br>'
+        + '「' + escHtml(rec.eventName || '') + '」の領収書を修正し、<b>再発行版（' + escHtml(rec.no) + '）</b>を添付ファイル（PNG画像）にてお送りいたします。<br>'
+        + '以前の領収書は無効となりますので、本メール添付の領収書をご利用ください。<br>'
+        + 'お申込番号：<b>' + escHtml(rec.orderNo || '') + '</b></div>';
+      const results = await sendMany([{ to: rec.email, subject: '【領収書（再発行）】' + (rec.eventName || ''), html, attachments: [{ filename: rec.no + '.png', content: png }] }], env);
+      const ok = results.length && results[0].ok;
+      return jres({ ok, error: ok ? undefined : (results[0] && results[0].error) || '送信に失敗しました' }, ok ? 200 : 502);
+    }
+
     // --- 受取人（claim）API: メールアドレス＋申込番号で照合（Bearer不要・ワンタイムリンク廃止） ---
     if (request.method === 'POST' && (path === '/claim/list' || path === '/claim/edit')) {
       if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);

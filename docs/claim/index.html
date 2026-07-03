@@ -128,7 +128,21 @@ async function doEdit(i) {
     _items[i] = j.item;
     renderList('再発行しました（新しい番号: ' + j.item.no + '）。以下からPNG保存・印刷できます。');
     window.scrollTo(0, 0);
+    // 再発行版を、決済時にご登録のメールアドレスへも自動送付する（画面表示だけにしない）
+    sendReissueMail(i);
   } catch (e) { alert('修正に失敗しました：' + e.message); btn.disabled = false; btn.textContent = 'この内容で再発行する'; }
+}
+
+async function sendReissueMail(i) {
+  try {
+    const holder = document.getElementById('rh_' + i);
+    if (!holder) return;
+    const canvas = await html2canvas(holder.firstElementChild, { scale: 2, backgroundColor: '#ffffff' });
+    const png = canvas.toDataURL('image/png').split(',')[1];
+    await api('/claim/mail', { email: _cred.email, orderNo: _cred.orderNo, no: _items[i].no, png });
+    const b = document.querySelector('.ok-banner');
+    if (b) b.textContent = '再発行しました（新しい番号: ' + _items[i].no + '）。再発行版の領収書をご登録のメールアドレスへお送りしました。以下からもPNG保存・印刷できます。';
+  } catch (e) { /* メール送付に失敗しても画面からのダウンロードは可能なため続行 */ }
 }
 
 async function downloadPng(i) {

@@ -270,14 +270,21 @@ function extractCompanions(raw){
   const markers=['お連れ','おつれ','連れ','同行','同伴','companion','guest'];const groups={};
   Object.keys(raw||{}).forEach(k=>{const low=k.toLowerCase();if(!markers.some(m=>k.includes(m)||low.includes(m.toLowerCase())))return;
     const num=(k.match(/(\d+)/)||[])[1]||'1';
-    const field=/氏名|name|お名前|名前/i.test(k)?'name':/フリガナ|ふりがな|カナ|kana/i.test(k)?'kana':/会社|屋号|company/i.test(k)?'company':/メール|mail|email/i.test(k)?'email':/電話|tel|phone/i.test(k)?'phone':'name';
+    // 領収書系フィールド（宛名等）が入っている場合は「お連れ様が別決済する」ケースとして扱う
+    const field=/領収書?.*(宛名|名義)|宛名|receipt/i.test(k)?'receiptName':/氏名|name|お名前|名前/i.test(k)?'name':/フリガナ|ふりがな|カナ|kana/i.test(k)?'kana':/会社|屋号|company/i.test(k)?'company':/メール|mail|email/i.test(k)?'email':/電話|tel|phone/i.test(k)?'phone':'name';
     (groups[num]=groups[num]||{})[field]=raw[k];});
   return Object.values(groups).filter(g=>g.name&&String(g.name).trim());
 }
 function syncCompanions(e,main,comps){
-  comps.forEach(c=>{let ex=e.participants.find(x=>x.companionOf===main.id&&((c.email&&normEmail(x.email)===normEmail(c.email))||x.name===String(c.name).trim()));
-    if(ex){['name','kana','company','email','phone'].forEach(f=>{if(c[f]&&!ex.edited.includes(f))ex[f]=String(c[f]).trim();});}
-    else{const cp=newParticipant({name:String(c.name).trim(),kana:(c.kana||'').trim(),company:(c.company||main.company||'').trim(),email:(c.email||'').trim(),phone:(c.phone||'').trim(),amount:e.fee||0,companionOf:main.id,groupId:main.groupId||main.id,source:main.source});cp.receipt.name=cp.company||cp.name;cp.receipt.amount=cp.amount;e.participants.push(cp);}});
+  comps.forEach(c=>{
+    const hasOwnReceipt=!!(c.receiptName&&String(c.receiptName).trim()); // 別決済（別会計）の申込
+    let ex=e.participants.find(x=>x.companionOf===main.id&&((c.email&&normEmail(x.email)===normEmail(c.email))||x.name===String(c.name).trim()));
+    if(ex){['name','kana','company','email','phone'].forEach(f=>{if(c[f]&&!ex.edited.includes(f))ex[f]=String(c[f]).trim();});
+      if(hasOwnReceipt){ex.receipt.split=true;if(!ex.receipt.name||ex.receipt.name===ex.company||ex.receipt.name===ex.name)ex.receipt.name=String(c.receiptName).trim();if(!ex.receipt.amount)ex.receipt.amount=ex.amount;}}
+    else{const cp=newParticipant({name:String(c.name).trim(),kana:(c.kana||'').trim(),company:(c.company||main.company||'').trim(),email:(c.email||'').trim(),phone:(c.phone||'').trim(),amount:e.fee||0,companionOf:main.id,groupId:main.groupId||main.id,source:main.source});
+      if(hasOwnReceipt){cp.receipt.split=true;cp.receipt.name=String(c.receiptName).trim();cp.note=(cp.note?cp.note+' / ':'')+'別決済（フォームに領収書情報あり）';}
+      else cp.receipt.name=cp.company||cp.name;
+      cp.receipt.amount=cp.amount;e.participants.push(cp);}});
 }
 
 /* ---------- CSV ---------- */
@@ -403,6 +410,8 @@ function linkUnmatchedPayment(eid,idx){
   const p=e.participants.find(x=>x.id===pid);if(!p)return;
   if(u.type===4||u.type===2){p.payStatus='cancel';}
   else{p.payStatus='paid';p.payMethod='オンライン';if(u.order)p.orderId=u.order;p.paidAt=p.paidAt||new Date().toISOString();}
+  // 決済に使われたメールを未登録の参加者（お連れ様等）に引き継ぐ（領収書送付・受取人ページのログインに必要）
+  if(!p.email&&u.mail){p.email=u.mail;if(p.source==='csv'&&!p.edited.includes('email'))p.edited.push('email');}
   e.unmatchedPayments.splice(idx,1);save();render();
 }
 function dismissUnmatched(eid,idx){const e=getEvent(eid);if(!e.unmatchedPayments)return;e.unmatchedPayments.splice(idx,1);save();render();}
@@ -521,9 +530,14 @@ function tabReception(e){
   if(cancels.length)h+='<h2 class="sec">欠席・キャンセル（'+cancels.length+'名）</h2><div class="card pad">'+cancels.map(p=>'<span class="tag gray" style="margin:2px">'+esc(p.name)+' <a href="javascript:restoreP(\''+e.id+'\',\''+p.id+'\')">戻す</a></span>').join(' ')+'</div>';
   const um=(e.unmatchedPayments||[]);
   if(um.length){
-    const popts=e.participants.filter(p=>p.status!=='cancel').map(p=>'<option value="'+p.id+'">'+esc(p.name)+(p.company?'／'+esc(p.company):'')+'</option>').join('');
-    h+='<h2 class="sec">特定ができなかった決済（'+um.length+'件）</h2><div class="banner">参加者リストと氏名・メールアドレスの両方が一致しなかった決済です。表記ゆれ等が考えられます。該当する参加者を選んで手動で紐づけてください。</div><div class="card" style="overflow:auto"><table><thead><tr><th>購入者名</th><th>メール</th><th>商品ID</th><th>種別</th><th>注文ID</th><th>紐づけ先</th><th></th></tr></thead><tbody>';
-    um.forEach((u,i)=>{h+='<tr><td>'+esc(u.name)+'</td><td>'+esc(u.mail)+'</td><td>'+esc(u.item)+'</td><td>'+(u.type===4||u.type===2?'<span class="tag gray">取消</span>':'<span class="tag ok">購入</span>')+'</td><td>'+esc(u.order)+'</td>'
+    const actives=e.participants.filter(p=>p.status!=='cancel');
+    h+='<h2 class="sec">特定ができなかった決済（'+um.length+'件）</h2><div class="banner">参加者リストと氏名・メールアドレスの両方が一致しなかった決済です。<b>お連れ様が別のアドレスで決済したケース</b>や表記ゆれが考えられます。氏名が一致する参加者は「候補」として自動選択されますので、確認して紐づけてください。</div><div class="card" style="overflow:auto"><table><thead><tr><th>購入者名</th><th>メール</th><th>商品ID</th><th>種別</th><th>注文ID</th><th>紐づけ先</th><th></th></tr></thead><tbody>';
+    um.forEach((u,i)=>{
+      // 氏名一致（またはメール一致）の参加者を候補として自動選択
+      const uname=normName(u.name||''),umail=normEmail(u.mail||'');
+      const cand=actives.find(p=>(uname&&normName(p.name)===uname)||(umail&&normEmail(p.email)===umail));
+      const popts=actives.map(p=>'<option value="'+p.id+'"'+(cand&&cand.id===p.id?' selected':'')+'>'+esc(p.name)+(p.company?'／'+esc(p.company):'')+(p.companionOf?'（お連れ様）':'')+(cand&&cand.id===p.id?' ★候補':'')+'</option>').join('');
+      h+='<tr><td>'+esc(u.name)+(cand?'<div class="hint" style="color:var(--ok)">候補あり（'+(normName(cand.name)===uname?'氏名一致':'メール一致')+'）</div>':'')+'</td><td>'+esc(u.mail)+'</td><td>'+esc(u.item)+'</td><td>'+(u.type===4||u.type===2?'<span class="tag gray">取消</span>':'<span class="tag ok">購入</span>')+'</td><td>'+esc(u.order)+'</td>'
       +'<td><select id="um_sel_'+i+'" style="min-width:160px"><option value="">選択…</option>'+popts+'</select></td>'
       +'<td class="flex"><button class="btn sm primary" onclick="linkUnmatchedPayment(\''+e.id+'\','+i+')">紐づけ</button><button class="btn sm danger" onclick="dismissUnmatched(\''+e.id+'\','+i+')">無視</button></td></tr>';});
     h+='</tbody></table></div>';
@@ -809,12 +823,9 @@ function receiptHTML(e,p){
     +'</td></tr></table>'
   +'</div>';}
 function previewReceipt(eid,pid){const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);
-  const hist=(p.receipt.history||[]);
-  const FLD={name:'宛名',amount:'金額',note:'但し書き'};
-  const histHtml=hist.length?'<div class="card pad" style="margin-top:14px"><b style="font-size:12.5px">修正履歴（'+hist.length+'件）</b><table style="margin-top:6px;font-size:12px"><thead><tr><th>日時</th><th>項目</th><th>変更前</th><th>変更後</th></tr></thead><tbody>'
-    +hist.map(h=>'<tr><td>'+fmtDT(h.at)+'</td><td>'+(FLD[h.field]||esc(h.field))+'</td><td>'+esc(h.field==='amount'?yen(h.before):h.before)+'</td><td>'+esc(h.field==='amount'?yen(h.after):h.after)+'</td></tr>').join('')
-    +'</tbody></table>'+(p.receipt.dirty?'<div class="hint" style="margin-top:6px;color:var(--warn)">※発行後に変更があるため、次回送信時に新しい番号（'+esc(p.receipt.no)+'-'+((p.receipt.revision||0)+1)+'）で「（再）」として再発行されます。</div>':'')+'</div>':'';
-  modal('領収書プレビュー'+(receiptDisplayNo(p)?' - '+receiptDisplayNo(p):''),receiptHTML(e,p)+histHtml,[{label:'閉じる',cls:'btn',on:'closeModal()'},{label:'印刷',cls:'btn',on:'printNode()'},{label:'発行・送信',cls:'btn primary',on:"sendReceipt('"+eid+"','"+pid+"')"}],660);}
+  // 修正履歴はデータとして保持・Chatwork通知される（画面表示は不要のため出さない）
+  const reissueNote=p.receipt.dirty?'<div class="hint" style="margin-top:10px;color:var(--warn);text-align:center">※発行後に変更があるため、次回送信時に新しい番号（'+esc(p.receipt.no)+'-'+((p.receipt.revision||0)+1)+'）で「（再）」として再発行されます。</div>':'';
+  modal('領収書プレビュー'+(receiptDisplayNo(p)?' - '+receiptDisplayNo(p):''),receiptHTML(e,p)+reissueNote,[{label:'閉じる',cls:'btn',on:'closeModal()'},{label:'印刷',cls:'btn',on:'printNode()'},{label:'発行・送信',cls:'btn primary',on:"sendReceipt('"+eid+"','"+pid+"')"}],660);}
 function previewReminder(eid){const e=getEvent(eid),p=(e.participants||[]).find(x=>x.status!=='cancel')||newParticipant();modal('リマインド プレビュー（1人目・HTMLメール表示）','<div class="card pad" style="font-size:13px"><div style="margin-bottom:10px"><b>件名：</b>'+esc(mergeBody(val('rm_subj'),e,p))+'</div><div class="divider"></div>'+mergeBodyHTML(document.getElementById('rm_body').value,e,p,'')+'</div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],640);}
 function mergeBody(t,e,p){return String(t).replace(/{{name}}/g,p.name||'ご参加者').replace(/{{event}}/g,e.name||'').replace(/{{date}}/g,e.date||'').replace(/{{venue}}/g,e.venue||'').replace(/{{amount}}/g,yen(p.amount??e.fee));}
 /* QRコード画像URL（メール埋め込み用。メールではJS実行不可のため画像URL参照にする）
