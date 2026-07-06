@@ -14,7 +14,7 @@
  *   GET    /qr?data=&size=   QRコードPNG生成（認証なし）
  *   POST   /receipts         領収書レコードのKV保存（管理アプリが発行時に呼ぶ・要Bearer）
  *   POST   /claim/list       受取人: メール＋申込番号で自分の領収書一覧を取得（認証=その2項目）
- *   POST   /claim/edit       受取人: 宛名/金額/但書の修正→再発行（初回発行から14日以内のみ）
+ *   POST   /claim/edit       受取人: 宛名の修正→再発行（宛名のみ・初回発行から14日以内のみ）
  *   ※ /open /qr /claim/* 以外はすべて Authorization: Bearer SHARED_SECRET が必要
  *
  * ■ デプロイ手順（Cloudflare ダッシュボード）
@@ -295,7 +295,7 @@ function renderReceipt(r) {
   return '<div style="width:560px;max-width:100%;margin:auto;background:#fff;color:#0f172a;font-family:\'Noto Sans JP\',\'Hiragino Sans\',\'Yu Gothic\',Meiryo,sans-serif;padding:40px 44px;border:1px solid #e2e8f0">'
     + '<div style="text-align:right;font-size:11px;color:#64748b;margin-bottom:8px">領収書番号：' + escHtml(dispNo) + '</div>'
     + '<div style="text-align:center;border-bottom:3px double #0f172a;padding-bottom:10px;margin-bottom:28px"><span style="font-size:22px;font-weight:900;letter-spacing:.25em">領　収　書</span>' + (r.isReissue ? '<span style="font-size:12px;font-weight:700;color:#b91c1c;margin-left:8px">（再）</span>' : '') + '</div>'
-    + '<table width="100%" cellpadding="0" cellspacing="0" style="border-bottom:1.5px solid #0f172a;margin-bottom:22px"><tr><td style="font-size:16px;font-weight:700;padding-bottom:5px">' + (escHtml(r.addressee) || '　　　　　　　　　　　') + '</td><td style="font-size:12px;white-space:nowrap;text-align:right;vertical-align:bottom;padding-bottom:5px">　' + hon + '</td></tr></table>'
+    + '<table width="100%" cellpadding="0" cellspacing="0" style="border-bottom:1.5px solid #0f172a;margin-bottom:22px"><tr><td style="font-size:16px;font-weight:700;padding-bottom:5px;text-align:center">' + (escHtml(r.addressee) || '　　　　　　　　　　　') + '<span style="font-size:12px;font-weight:400">　' + hon + '</span></td></tr></table>'
     + '<table width="100%" cellpadding="0" cellspacing="0" style="border:2px solid #0f172a;background:#f8fafc;margin-bottom:14px"><tr>'
     + '<td style="font-size:12px;font-weight:700;color:#374151;white-space:nowrap;padding:13px 0 13px 14px">金　額</td>'
     + '<td style="font-size:23px;font-weight:900;letter-spacing:.04em;padding:13px 10px">¥ ' + (hasAmount ? fmt(amount) : '―') + '</td>'
@@ -445,7 +445,7 @@ export default {
         return jres({ ok: true, items });
       }
 
-      // /claim/edit: 本人修正 → 新番号（R-xxxxx-1…）で再発行（初回発行から14日以内のみ）
+      // /claim/edit: 本人修正（宛名のみ・金額/但書は事務局対応） → 新番号（R-xxxxx-1…）で再発行（初回発行から14日以内のみ）
       const no = normNo(body.no);
       const v = no ? await env.MAILLOG.get('rcpt:' + no) : null;
       let rec = null;
@@ -453,7 +453,7 @@ export default {
       if (!claimMatch(rec, email, orderNo)) return jres({ ok: false, error: '対象の領収書が見つかりません' }, 404);
       if (!claimEditable(rec, now)) return jres({ ok: false, error: '修正期限（発行から' + CLAIM_EDIT_DAYS + '日以内）を過ぎています。お手数ですが事務局までご連絡ください。' }, 403);
       const ch = body.changes || {};
-      const FIELDS = { addressee: 'addressee', amount: 'amount', note: 'note' };
+      const FIELDS = { addressee: 'addressee' }; // 受取人が修正できるのは宛名のみ（金額・但書の変更依頼は事務局経由）
       const history = Array.isArray(rec.history) ? rec.history.slice() : [];
       const next = { ...rec, history };
       let changed = false;
