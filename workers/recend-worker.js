@@ -520,10 +520,10 @@ export default {
       if (request.method === 'POST') {
         let body;
         try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
-        // token=全体共通。roomId/mention/template=領収書修正通知、closingRoomId/closingMention=締め報告（経理用売上明細）
+        // token=全体共通。roomId/mention/template=領収書修正通知、closingRoomId/closingMention/closingTemplate=締め報告（経理用売上明細）
         const cfg = {
           token: String(body.token || ''), roomId: String(body.roomId || ''), mention: String(body.mention || ''), template: String(body.template || ''),
-          closingRoomId: String(body.closingRoomId || ''), closingMention: String(body.closingMention || ''),
+          closingRoomId: String(body.closingRoomId || ''), closingMention: String(body.closingMention || ''), closingTemplate: String(body.closingTemplate || ''),
         };
         await env.MAILLOG.put('cfg:chatwork', JSON.stringify(cfg));
         return jres({ ok: true });
