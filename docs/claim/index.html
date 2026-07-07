@@ -106,11 +106,12 @@ function renderList(notice) {
       + '<div class="btns">'
       + '<button class="primary" onclick="downloadPng(' + i + ')">PNGで保存</button>'
       + '<button onclick="printOne(' + i + ')">印刷</button>'
-      + (it.canEdit ? '<button onclick="toggleEdit(' + i + ')">宛名を修正</button>' : '<span class="hint" style="align-self:center">修正期限（発行から2週間）を過ぎています。修正は事務局までご連絡ください。</span>')
+      + (it.canEdit ? '<button onclick="toggleEdit(' + i + ')">宛名・但し書きを修正</button>' : '<span class="hint" style="align-self:center">修正期限（発行から2週間）を過ぎています。修正は事務局までご連絡ください。</span>')
       + '</div>'
       + (it.canEdit ? '<div class="editform" id="ef_' + i + '" style="display:none">'
-        + '<div class="hint" style="margin-bottom:10px">修正できるのは<b>宛名のみ</b>です（金額・但し書きの変更は事務局までご連絡ください）。修正すると新しい番号（' + esc(it.no.match(/^R-\d+/) ? it.no.match(/^R-\d+/)[0] : it.no) + '-n）で「（再）」付きの領収書が再発行されます。修正期限: ' + fmtD(it.editDeadline) + ' まで</div>'
+        + '<div class="hint" style="margin-bottom:10px">修正できるのは<b>宛名・但し書き</b>です（金額の変更は事務局までご連絡ください）。修正すると新しい番号（' + esc(it.no.match(/^R-\d+/) ? it.no.match(/^R-\d+/)[0] : it.no) + '-n）で「（再）」付きの領収書が再発行されます。修正期限: ' + fmtD(it.editDeadline) + ' まで</div>'
         + '<label><span>宛名</span><input id="ed_name_' + i + '" value="' + esc(it.addressee) + '"></label>'
+        + '<label><span>但し書き</span><input id="ed_note_' + i + '" value="' + esc(it.note) + '" placeholder="例）懇親会費として"></label>'
         + '<button class="primary" id="ed_btn_' + i + '" onclick="doEdit(' + i + ')">この内容で再発行する</button>'
         + '</div>' : '')
       + '</div>';
@@ -122,15 +123,17 @@ function toggleEdit(i) { const f = document.getElementById('ef_' + i); if (f) f.
 
 async function doEdit(i) {
   const it = _items[i];
-  // 受取人が修正できるのは宛名のみ（金額・但し書きは事務局対応）
-  const changes = {
-    addressee: document.getElementById('ed_name_' + i).value.trim(),
-  };
-  if (!changes.addressee) { alert('宛名を入力してください。'); return; }
-  if (changes.addressee === it.addressee) { alert('宛名が変更されていません。'); return; }
+  // 受取人が修正できるのは宛名・但し書き（金額は事務局対応）
+  const addressee = document.getElementById('ed_name_' + i).value.trim();
+  const note = document.getElementById('ed_note_' + i).value.trim();
+  if (!addressee) { alert('宛名を入力してください。'); return; }
+  const changes = {};
+  if (addressee !== it.addressee) changes.addressee = addressee;
+  if (note !== (it.note || '')) changes.note = note;
+  if (!Object.keys(changes).length) { alert('宛名・但し書きが変更されていません。'); return; }
   // 絵文字・特殊文字は領収書画像で正しく表示されない場合があるため事前に警告する
-  const risky = [...new Set(riskyChars(changes.addressee))];
-  if (risky.length && !confirm('宛名に絵文字・特殊文字（' + risky.join(' ') + '）が含まれています。\n領収書画像で正しく表示されない場合があります。このまま再発行しますか？')) return;
+  const risky = [...new Set(riskyChars(addressee + note))];
+  if (risky.length && !confirm('宛名・但し書きに絵文字・特殊文字（' + risky.join(' ') + '）が含まれています。\n領収書画像で正しく表示されない場合があります。このまま再発行しますか？')) return;
   if (!confirm('この内容で再発行します。よろしいですか？\n（元の領収書は無効となり、新しい番号で発行されます）')) return;
   const btn = document.getElementById('ed_btn_' + i); btn.disabled = true; btn.textContent = '再発行中…';
   try {

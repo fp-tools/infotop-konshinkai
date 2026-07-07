@@ -14,7 +14,7 @@
  *   GET    /qr?data=&size=   QRコードPNG生成（認証なし）
  *   POST   /receipts         領収書レコードのKV保存（管理アプリが発行時に呼ぶ・要Bearer）
  *   POST   /claim/list       受取人: メール＋申込番号で自分の領収書一覧を取得（認証=その2項目）
- *   POST   /claim/edit       受取人: 宛名の修正→再発行（宛名のみ・初回発行から14日以内のみ）
+ *   POST   /claim/edit       受取人: 宛名・但し書きの修正→再発行（金額は事務局対応・初回発行から14日以内のみ）
  *   ※ /open /qr /claim/* 以外はすべて Authorization: Bearer SHARED_SECRET が必要
  *
  * ■ デプロイ手順（Cloudflare ダッシュボード）
@@ -448,7 +448,7 @@ export default {
         return jres({ ok: true, items });
       }
 
-      // /claim/edit: 本人修正（宛名のみ・金額/但書は事務局対応） → 新番号（R-xxxxx-1…）で再発行（初回発行から14日以内のみ）
+      // /claim/edit: 本人修正（宛名・但し書き・金額は事務局対応） → 新番号（R-xxxxx-1…）で再発行（初回発行から14日以内のみ）
       const no = normNo(body.no);
       const v = no ? await env.MAILLOG.get('rcpt:' + no) : null;
       let rec = null;
@@ -456,7 +456,7 @@ export default {
       if (!claimMatch(rec, email, orderNo)) return jres({ ok: false, error: '対象の領収書が見つかりません' }, 404);
       if (!claimEditable(rec, now)) return jres({ ok: false, error: '修正期限（発行から' + CLAIM_EDIT_DAYS + '日以内）を過ぎています。お手数ですが事務局までご連絡ください。' }, 403);
       const ch = body.changes || {};
-      const FIELDS = { addressee: 'addressee' }; // 受取人が修正できるのは宛名のみ（金額・但書の変更依頼は事務局経由）
+      const FIELDS = { addressee: 'addressee', note: 'note' }; // 受取人が修正できるのは宛名・但し書き（金額の変更依頼は事務局経由）
       const history = Array.isArray(rec.history) ? rec.history.slice() : [];
       const next = { ...rec, history };
       let changed = false;
