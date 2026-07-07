@@ -49,8 +49,11 @@ const RECEIPT_REG_DEFAULT='T6010001102185'; // 当社の事業者登録番号（
 // 領収書発行メールの既定の件名・本文（全開催共通。差込：{{name}} {{event}} {{date}} {{venue}} {{amount}} {{receiptNo}} {{orderNo}}）
 const RC_SUBJ_DEFAULT='【領収書】{{event}}（{{receiptNo}}）';
 const RC_BODY_DEFAULT='{{name}} 様\n\n「{{event}}」の領収書を、添付ファイル（PNG画像）にてお送りいたします。\n\n▼領収書番号：{{receiptNo}}\n▼お申込番号：{{orderNo}}\n\nご査収くださいますようお願い申し上げます。';
+// 再発行（宛名・金額・但し書の修正後に再送する）メールの既定の件名・本文
+const RC_RE_SUBJ_DEFAULT='【領収書（再発行）】{{event}}（{{receiptNo}}）';
+const RC_RE_BODY_DEFAULT='{{name}} 様\n\n先にお送りした「{{event}}」の領収書につきまして、内容を修正し「再発行」いたしましたので、添付ファイル（PNG画像）にて改めてお送りいたします。\nお手数ですが、今後は本メールの領収書（番号：{{receiptNo}}）をご利用ください。\n\n▼領収書番号：{{receiptNo}}\n▼お申込番号：{{orderNo}}\n\nご査収くださいますようお願い申し上げます。';
 const defaultStore=()=>({events:[],people:[],venues:[],receiptSeq:0,
-  settings:{recendUrl:'',recendToken:'',companyName:'株式会社インフォトップ',receiptIssuer:'株式会社インフォトップ',companyAddr:'',issuerPhone:'',issuerRegNum:RECEIPT_REG_DEFAULT,claimUrl:'',formApiUrl:'',formApiToken:'',payReceiveUrl:'',payReceiveToken:'',payPageUrl:'',payItemId:'',autoReplyOn:false,autoReplySubj:AR_SUBJ_DEFAULT,autoReplyBody:AR_BODY_DEFAULT,receiptSubj:RC_SUBJ_DEFAULT,receiptBody:RC_BODY_DEFAULT}});
+  settings:{recendUrl:'',recendToken:'',companyName:'株式会社インフォトップ',receiptIssuer:'株式会社インフォトップ',companyAddr:'',issuerPhone:'',issuerRegNum:RECEIPT_REG_DEFAULT,claimUrl:'',formApiUrl:'',formApiToken:'',payReceiveUrl:'',payReceiveToken:'',payPageUrl:'',payItemId:'',autoReplyOn:false,autoReplySubj:AR_SUBJ_DEFAULT,autoReplyBody:AR_BODY_DEFAULT,receiptSubj:RC_SUBJ_DEFAULT,receiptBody:RC_BODY_DEFAULT,receiptReSubj:RC_RE_SUBJ_DEFAULT,receiptReBody:RC_RE_BODY_DEFAULT}});
 function normalizeStore(r){if(!r||!r.events)return defaultStore();r.people=r.people||[];r.venues=r.venues||[];r.receiptSeq=r.receiptSeq||0;r.mailTemplates=r.mailTemplates||[];r.settings=Object.assign(defaultStore().settings,r.settings||{});return r;}
 let store=load();
 function load(){try{return normalizeStore(JSON.parse(localStorage.getItem(LS_KEY)));}catch(e){}return defaultStore();}
@@ -860,7 +863,8 @@ function tabReception(e){
     +'<td>'+(p.groupId?esc(p.groupId):'-')+'</td>'
     +'<td><input type="number" value="'+(p.amount??0)+'" style="width:100px" onchange="setAmount(\''+e.id+'\',\''+p.id+'\',this.value)"></td>'
     +'<td>'+payBadgeEditable(e.id,p)+'</td>'
-    +'<td><input value="'+esc(p.receipt.name||'')+'" style="min-width:140px" onchange="setReceiptName(\''+e.id+'\',\''+p.id+'\',this.value)"></td>'
+    +'<td><input value="'+esc(p.receipt.name||'')+'" style="min-width:140px" onchange="setReceiptName(\''+e.id+'\',\''+p.id+'\',this.value)">'
+      +(comp?'<label class="chk" style="margin-top:5px;font-size:11.5px" title="このお連れ様を申込者と別会計にして、別々の領収書を発行します"><input type="checkbox" '+(p.receipt.split?'checked':'')+' onchange="receptionToggleSplit(\''+e.id+'\',\''+p.id+'\',this.checked)"> 別会計にする</label>':'')+'</td>'
     +'<td class="flex">'+(p.checkedIn?'<button class="btn sm" onclick="undoCheckin(\''+e.id+'\',\''+p.id+'\')">取消</button>':'<button class="btn sm primary" onclick="receptionConfirm(\''+e.id+'\',\''+p.id+'\')">受付</button>')+'<button class="btn sm danger" onclick="markCancel(\''+e.id+'\',\''+p.id+'\')">欠席</button></td></tr>';});
   h+='</tbody></table></div>';
   const cancels=(e.participants||[]).filter(p=>p.status==='cancel');
@@ -1066,29 +1070,39 @@ function tabMail(e){
     +'<label class="fld"><span>件名</span><input id="ar_subj" value="'+esc(ar.subj)+'"></label>'
     +'<label class="fld"><span>本文</span><textarea id="ar_body" rows="9">'+esc(ar.body)+'</textarea></label>'
     +'<div class="flex"><button class="btn primary" onclick="saveAutoReply(\''+e.id+'\')">自動返信メールを保存</button><button class="btn" onclick="previewAutoReply(\''+e.id+'\')">プレビュー</button></div></div>';
-  // 領収書メール作成（「領収書発行」タブで発行・送信するときの件名・本文。全開催共通の設定）
+  // 領収書メール作成（「領収書発行」タブで発行・送信するときの件名・本文。発行用・再発行用を分けて設定。全開催共通）
   const rc={subj:store.settings.receiptSubj||RC_SUBJ_DEFAULT,body:store.settings.receiptBody||RC_BODY_DEFAULT};
+  const rcRe={subj:store.settings.receiptReSubj||RC_RE_SUBJ_DEFAULT,body:store.settings.receiptReBody||RC_RE_BODY_DEFAULT};
   h+='<div class="card pad" style="margin-bottom:16px"><div class="between" style="margin-bottom:6px"><b>'+ic('receipt',16)+' 領収書メール作成</b><span class="hint">全開催共通</span></div>'
-    +'<div class="hint" style="margin-bottom:12px">「領収書発行」タブで領収書を発行・送信するときの<b>件名・本文</b>です（領収書はPNG画像で添付されます）。差込タグ：{{name}} {{event}} {{date}} {{venue}} {{amount}} <b>{{receiptNo}}</b>（領収書番号） <b>{{orderNo}}</b>（申込番号）</div>'
+    +'<div class="hint" style="margin-bottom:12px">「領収書発行」タブで送信するときの<b>件名・本文</b>です（領収書はPNG画像で添付）。<b>初回発行</b>と、宛名・金額・但し書を修正して送り直す<b>再発行</b>で別々に設定できます。差込タグ：{{name}} {{event}} {{date}} {{venue}} {{amount}} <b>{{receiptNo}}</b>（領収書番号） <b>{{orderNo}}</b>（申込番号）</div>'
+    +'<div style="font-weight:700;font-size:12.5px;color:var(--sub);margin-bottom:6px">■ 初回発行メール</div>'
     +'<label class="fld"><span>件名</span><input id="rc_subj" value="'+esc(rc.subj)+'"></label>'
-    +'<label class="fld"><span>本文</span><textarea id="rc_body" rows="8">'+esc(rc.body)+'</textarea></label>'
+    +'<label class="fld"><span>本文</span><textarea id="rc_body" rows="7">'+esc(rc.body)+'</textarea></label>'
+    +'<div class="divider"></div>'
+    +'<div style="font-weight:700;font-size:12.5px;color:var(--sub);margin-bottom:6px">■ 再発行メール<span class="hint">（発行後に内容を修正して送り直したときに使われます）</span></div>'
+    +'<label class="fld"><span>件名</span><input id="rc_re_subj" value="'+esc(rcRe.subj)+'"></label>'
+    +'<label class="fld"><span>本文</span><textarea id="rc_re_body" rows="7">'+esc(rcRe.body)+'</textarea></label>'
     +'<div class="hint" style="margin-bottom:10px">※受取人ページURLを設定している場合、宛名修正の案内が本文末尾に自動で追記されます。</div>'
-    +'<div class="flex"><button class="btn primary" onclick="saveReceiptMail()">領収書メールを保存</button><button class="btn" onclick="previewReceiptMail(\''+e.id+'\')">プレビュー</button></div></div>';
+    +'<div class="flex"><button class="btn primary" onclick="saveReceiptMail()">領収書メールを保存</button><button class="btn" onclick="previewReceiptMail(\''+e.id+'\',false)">初回のプレビュー</button><button class="btn" onclick="previewReceiptMail(\''+e.id+'\',true)">再発行のプレビュー</button></div></div>';
   h+='<h2 class="sec">メール履歴</h2>'+tabMailLog(e);
   return h;
 }
 function saveReceiptMail(){
   store.settings.receiptSubj=val('rc_subj')||RC_SUBJ_DEFAULT;
   store.settings.receiptBody=document.getElementById('rc_body').value||RC_BODY_DEFAULT;
-  save();alert('領収書メールの件名・本文を保存しました（全開催共通で、次回以降の発行に適用されます）。');
+  store.settings.receiptReSubj=val('rc_re_subj')||RC_RE_SUBJ_DEFAULT;
+  store.settings.receiptReBody=document.getElementById('rc_re_body').value||RC_RE_BODY_DEFAULT;
+  save();alert('領収書メール（初回発行・再発行）の件名・本文を保存しました（全開催共通で、次回以降の発行に適用されます）。');
 }
-function previewReceiptMail(eid){
+function previewReceiptMail(eid,reissue){
   const e=getEvent(eid),base=(e.participants||[]).find(x=>x.status!=='cancel')||newParticipant({name:'テスト太郎',groupId:'2607-0001'});
   // プレビューは未保存の編集内容で表示。領収書番号はサンプルを充てる
-  const p={...base,groupId:base.groupId||'2607-0001',receipt:{...base.receipt,no:base.receipt.no||'IS-E00001',revision:base.receipt.revision||0,amount:base.receipt.amount??base.amount}};
-  const subj=mergeReceipt(val('rc_subj'),e,p);
-  const bodyHtml=esc(mergeReceipt(document.getElementById('rc_body').value,e,p)).replace(/\n/g,'<br>');
-  modal('領収書メール プレビュー','<div class="card pad" style="font-size:13px"><div style="margin-bottom:10px"><b>件名：</b>'+esc(subj)+'</div><div class="divider"></div><div style="line-height:1.9">'+bodyHtml+'</div><div class="hint" style="margin-top:12px">※実際のメールには領収書PNGが添付され、受取人ページURL設定時は宛名修正の案内が末尾に付きます。</div></div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],640);
+  const p={...base,groupId:base.groupId||'2607-0001',receipt:{...base.receipt,no:base.receipt.no||'IS-E00001',revision:reissue?1:0,reissue:!!reissue,amount:base.receipt.amount??base.amount}};
+  const subjTpl=reissue?val('rc_re_subj'):val('rc_subj');
+  const bodyTpl=reissue?document.getElementById('rc_re_body').value:document.getElementById('rc_body').value;
+  const subj=mergeReceipt(subjTpl,e,p);
+  const bodyHtml=esc(mergeReceipt(bodyTpl,e,p)).replace(/\n/g,'<br>');
+  modal('領収書メール プレビュー（'+(reissue?'再発行':'初回発行')+'）','<div class="card pad" style="font-size:13px"><div style="margin-bottom:10px"><b>件名：</b>'+esc(subj)+'</div><div class="divider"></div><div style="line-height:1.9">'+bodyHtml+'</div><div class="hint" style="margin-top:12px">※実際のメールには領収書PNGが添付され、受取人ページURL設定時は宛名修正の案内が末尾に付きます。</div></div>',[{label:'閉じる',cls:'btn',on:'closeModal()'}],640);
 }
 function saveAutoReply(eid){
   const e=getEvent(eid);
@@ -1105,32 +1119,85 @@ function previewAutoReply(eid){
 function receiptTargets(e){
   return (e.participants||[]).filter(p=>p.status!=='cancel'||p.payStatus==='paid'||p.receipt.no||(Number(p.paidAmount)||0)>0);
 }
+/* ---- 領収書テーブルのセル部品（申込者・お連れ様で共通） ---- */
+function rcptContentInputs(e,p){
+  return '<div style="display:flex;flex-direction:column;gap:4px;min-width:200px">'
+    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#5f6b82"><span style="flex:0 0 44px">宛名</span><input value="'+esc(p.receipt.name||p.company||p.name)+'" style="flex:1" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'name\',this.value)"></label>'
+    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#5f6b82"><span style="flex:0 0 44px">金額</span><input type="number" value="'+(p.receipt.amount??p.amount??0)+'" style="flex:1" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'amount\',this.value)"></label>'
+    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#5f6b82"><span style="flex:0 0 44px">但し書き</span><input value="'+esc(p.receipt.note||'懇親会費として')+'" style="flex:1" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'note\',this.value)"></label>'
+    +'</div>';
+}
+function rcptPayCell(p){return p.status==='cancel'?'<span class="tag gray">取消</span>':p.payStatus==='paid'?'<span class="tag ok">済</span>':'<span class="tag warn">未</span>';}
+/* 領収書・状態を改行して2行1列に（1行目=要否 / 2行目=送信状態＋番号） */
+function rcptStatusCell(p){
+  const need=p.receipt.need==='不要'?'<span class="tag gray">不要</span>':p.receipt.need==='必要'?'<span class="tag brand">必要</span>':'<span class="hint">未回答</span>';
+  const st=(p.receipt.sentAt?'<span class="tag ok">送信済</span>':p.receipt.issued?'<span class="tag warn">発行済</span>':'<span class="tag gray">未</span>')+(receiptDisplayNo(p)?' <span class="hint">'+esc(receiptDisplayNo(p))+(p.receipt.reissue?'（再）':'')+'</span>':'')+(p.receipt.dirty?'<div class="hint" style="color:#9a7400">変更あり→再発行</div>':'');
+  return '<div>'+need+'</div><div style="margin-top:4px">'+st+'</div>';
+}
+/* プレビュー・発行/送信・リセットを縦に並べる */
+function rcptActionCell(e,p){
+  return '<div style="display:flex;flex-direction:column;gap:4px;align-items:stretch;min-width:104px">'
+    +'<button class="btn sm" onclick="previewReceipt(\''+e.id+'\',\''+p.id+'\')">プレビュー</button>'
+    +'<button class="btn sm primary" onclick="sendReceipt(\''+e.id+'\',\''+p.id+'\')">発行・送信</button>'
+    +(p.receipt.no?'<button class="btn sm danger" title="誤発行に備えて送信履歴をリセット（次回は新番号で発行）" onclick="resetReceipt(\''+e.id+'\',\''+p.id+'\')">リセット</button>':'')
+    +'</div>';
+}
+/* 申込者（main）の行。お連れ様がいれば申込番号セルにアコーディオンを設ける */
+function receiptMainRow(e,p){
+  const comps=companionsOf(e,p.id);
+  const open=rcptOpen[p.id]||comps.some(c=>c.receipt.split); // 会計を分けた（別会計あり）場合は開いたまま
+  const orderCell='<div><b>'+(p.groupId?esc(p.groupId):'<span class="tag warn" title="申込番号がないと受取人ページで再取得できません">無</span>')+'</b></div>'
+    +'<div class="hint" style="margin-top:4px">'+(1+comps.length)+'名</div>'
+    +(comps.length?'<button class="btn sm" style="margin-top:6px" onclick="toggleRcptAccordion(\''+p.id+'\')">'+(open?'▼':'▶')+' お連れ様 '+comps.length+'名</button>':'');
+  return '<tr'+(p.status==='cancel'?' style="background:#fdf6f5"':'')+'>'
+    +'<td style="text-align:center"><input type="checkbox" class="rcpt-sel" data-pid="'+p.id+'"></td>'
+    +'<td>'+(p.status==='cancel'?'<div style="margin-bottom:4px"><span class="tag danger">キャンセル'+(p.payStatus==='paid'?'（支払済）':'')+'</span></div>':'')+orderCell+'</td>'
+    +'<td><b>'+esc(p.company||p.name||'(無題)')+'</b>'+(p.company&&p.name?'<div class="hint">'+esc(p.name)+'</div>':'')+'</td>'
+    +'<td>'+rcptContentInputs(e,p)+'</td>'
+    +'<td>'+(esc(p.email)||'<span class="tag danger">無</span>')+'</td>'
+    +'<td style="text-align:center">'+rcptPayCell(p)+'</td>'
+    +'<td>'+rcptStatusCell(p)+'</td>'
+    +'<td>'+rcptActionCell(e,p)+'</td></tr>';
+}
+/* お連れ様のサブ行（アコーディオン展開時）。別会計にすると独立した領収書として発行操作できる */
+function receiptCompRow(e,main,c){
+  const split=c.receipt.split;
+  let content,status,action;
+  if(split){
+    content=rcptContentInputs(e,c);status=rcptStatusCell(c);
+    action='<div style="display:flex;flex-direction:column;gap:4px">'+rcptActionCell(e,c)+'<button class="btn sm" onclick="receiptMergeCompanion(\''+e.id+'\',\''+main.id+'\',\''+c.id+'\')">合算に戻す</button></div>';
+  }else{
+    content='<div class="hint">申込者の領収書に合算<br>（別々に発行するには「別会計にする」）</div>';status='<span class="hint">-</span>';
+    action='<button class="btn sm primary" onclick="receiptSplitCompanion(\''+e.id+'\',\''+main.id+'\',\''+c.id+'\')">別会計にする</button>';
+  }
+  return '<tr style="background:#f7f9fc">'
+    +'<td style="text-align:center">'+(split?'<input type="checkbox" class="rcpt-sel" data-pid="'+c.id+'">':'')+'</td>'
+    +'<td style="padding-left:16px"><span class="hint">└ お連れ様</span></td>'
+    +'<td><span style="color:var(--muted)">└ </span><b>'+esc(c.company||c.name||'')+'</b>'+(c.company&&c.name?'<div class="hint">'+esc(c.name)+'</div>':'')+'</td>'
+    +'<td>'+content+'</td>'
+    +'<td>'+(esc(c.email)||'<span class="hint">（申込者宛）</span>')+'</td>'
+    +'<td style="text-align:center">'+rcptPayCell(c)+'</td>'
+    +'<td>'+status+'</td>'
+    +'<td>'+action+'</td></tr>';
+}
 function tabReceipts(e){
   const ps=receiptTargets(e);
   const issued=ps.filter(p=>p.receipt.no).length;
+  const mains=ps.filter(p=>isMain(p));
+  const orphans=ps.filter(p=>!isMain(p)&&!mains.some(m=>m.id===p.companionOf)); // 申込者が対象外のお連れ様は単独表示
   let h='<div class="card pad"><div class="between" style="margin-bottom:6px"><b>'+ic('receipt',16)+' 領収書発行</b><div class="flex">'
     +'<button class="btn sm" onclick="autoGroupReceipts(\''+e.id+'\')">申込グループで自動まとめ</button>'
     +'<button class="btn sm" onclick="downloadReceiptZip(\''+e.id+'\')">'+ic('download',14)+' 発行済みをZIPで一括DL'+(issued?'（'+issued+'件）':'')+'</button>'
     +'<button class="btn sm" onclick="sendCheckedReceipts(\''+e.id+'\')">チェックした人に送信</button>'
     +'<button class="btn sm primary" onclick="openBulkReceipts(\''+e.id+'\')">一括発行・送信</button></div></div>'
-    +'<div class="hint" style="margin-bottom:10px">領収書はPNG画像を<b>メールに添付</b>して送信します（本文には記載しません）。番号は発行順の連番（IS-E00001）で、発行後に宛名・金額・但書を変更すると次回送信時に IS-E00001-1 の形式で「（再）」として再発行されます（変更しても元の内容に戻した場合は番号はそのまま・（再）も付きません）。<b>キャンセルされた方でも入金がある場合は発行対象として残ります。</b><br>'
-    +'<b>グループ決済の領収書：</b>代表者がまとめて決済した場合（例: 2名分6,000円）、領収書は<b>原則申込者1枚に合算</b>されます。フォームでお連れ様の領収書指定（別会計）がある場合は自動で分割（各3,000円）。各自が別々に決済した場合はそれぞれに発行されます。手動で分けたい場合は「別会計」にチェックして金額を入れてください。</div>'
-    +'<div style="overflow:auto"><table><thead><tr><th><input type="checkbox" onchange="document.querySelectorAll(\'.rcpt-sel\').forEach(c=>c.checked=this.checked)" title="全選択"></th><th>宛名・金額・但し書き</th><th>別会計</th><th>送信先</th><th>申込番号</th><th>申込人数</th><th>領収書</th><th>状態</th><th></th></tr></thead><tbody>';
-  ps.forEach(p=>{h+='<tr'+(p.status==='cancel'?' style="background:#fdf6f5"':'')+'><td style="text-align:center"><input type="checkbox" class="rcpt-sel" data-pid="'+p.id+'"></td>'
-    +'<td>'+(p.status==='cancel'?'<div style="margin-bottom:4px"><span class="tag danger">キャンセル'+(p.payStatus==='paid'?'（支払済）':'')+'</span></div>':'')
-    +'<div style="display:flex;flex-direction:column;gap:4px;min-width:200px">'
-    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#5f6b82"><span style="flex:0 0 44px">宛名</span><input value="'+esc(p.receipt.name||p.company||p.name)+'" style="flex:1" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'name\',this.value)"></label>'
-    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#5f6b82"><span style="flex:0 0 44px">金額</span><input type="number" value="'+(p.receipt.amount??p.amount??0)+'" style="flex:1" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'amount\',this.value)"></label>'
-    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#5f6b82"><span style="flex:0 0 44px">但し書き</span><input value="'+esc(p.receipt.note||'懇親会費として')+'" style="flex:1" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'note\',this.value)"></label>'
-    +'</div></td>'
-    +'<td style="text-align:center"><input type="checkbox" '+(p.receipt.split?'checked':'')+' onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'split\',this.checked)" title="別会計"></td>'
-    +'<td>'+(esc(p.email)||'<span class="tag danger">無</span>')+'</td>'
-    +'<td>'+(p.groupId?esc(p.groupId):'<span class="tag warn" title="申込番号がないと受取人ページで再取得できません">無</span>')+'</td>'
-    +'<td>'+(isMain(p)?('<b>'+(1+companionsOf(e,p.id).length)+'名</b>'):'<span class="hint">└連れ</span>')+'</td>'
-    +'<td>'+(p.receipt.need==='不要'?'<span class="tag gray">不要</span>':p.receipt.need==='必要'?'<span class="tag brand">必要</span>':'<span class="hint">未回答</span>')+'</td>'
-    +'<td>'+(p.receipt.sentAt?'<span class="tag ok">送信済</span>':p.receipt.issued?'<span class="tag warn">発行済</span>':'<span class="tag gray">未</span>')+(receiptDisplayNo(p)?'<div class="hint">'+esc(receiptDisplayNo(p))+(p.receipt.reissue?'（再）':'')+'</div>':'')+(p.receipt.dirty?'<div class="hint" style="color:#9a7400">変更あり→再発行</div>':'')+'</td>'
-    +'<td class="flex"><button class="btn sm" onclick="previewReceipt(\''+e.id+'\',\''+p.id+'\')">プレビュー</button><button class="btn sm primary" onclick="sendReceipt(\''+e.id+'\',\''+p.id+'\')">発行・送信</button>'
-    +(p.receipt.no?'<button class="btn sm danger" title="誤発行に備えて送信履歴をリセット（次回は新番号で発行）" onclick="resetReceipt(\''+e.id+'\',\''+p.id+'\')">リセット</button>':'')+'</td></tr>';});
+    +'<div class="hint" style="margin-bottom:10px">領収書はPNG画像を<b>メールに添付</b>して送信します。番号は発行順の連番（IS-E00001）で、発行後に宛名・金額・但書を変更すると次回送信時に IS-E00001-1 の形式で「（再）」として再発行されます。<b>お連れ様は申込番号の「▼お連れ様」から表示</b>し、「別会計にする」で申込者の合算額から切り出して個別に発行できます（代表者が人数分を決済済みならお連れ様も支払済に）。</div>'
+    +'<div style="overflow:auto"><table><thead><tr><th><input type="checkbox" onchange="document.querySelectorAll(\'.rcpt-sel\').forEach(c=>c.checked=this.checked)" title="全選択"></th><th>申込番号</th><th>申込人名</th><th>宛名・金額・但し書</th><th>送信先</th><th>支払</th><th>領収書・状態</th><th></th></tr></thead><tbody>';
+  mains.forEach(m=>{
+    h+=receiptMainRow(e,m);
+    const comps=companionsOf(e,m.id);
+    if(comps.length&&(rcptOpen[m.id]||comps.some(c=>c.receipt.split)))comps.forEach(c=>{h+=receiptCompRow(e,m,c);});
+  });
+  orphans.forEach(p=>{h+=receiptMainRow(e,p);});
   return h+'</tbody></table></div></div>';
 }
 /* 発行済み領収書をPNG化してZIPで一括ダウンロード */
@@ -1168,6 +1235,60 @@ function rcpt(eid,pid,k,v){const p=getEvent(eid).participants.find(x=>x.id===pid
   // 内容が発行時と同じに戻った場合はdirtyを解除（（再）を付けず枝番も振らない）
   if(p.receipt.no&&['name','amount','note'].includes(k))p.receipt.dirty=!p.receipt.lastIssued||p.receipt.lastIssued!==receiptContentSnapshot(p);
   save();}
+/* ---- お連れ様アコーディオン／別会計（会計分割） ---- */
+let rcptOpen={}; // 申込者id -> アコーディオン開閉（端末内メモリ）
+function toggleRcptAccordion(mainId){rcptOpen[mainId]=!rcptOpen[mainId];render();}
+/* 領収書金額を変更（発行済みなら修正履歴＋dirty）。reconcileGroupPayments内のsetRcptAmtと同じ扱い */
+function setReceiptAmount(p,v){v=Number(v)||0;
+  if((p.receipt.amount??null)===v)return;
+  if(p.receipt.no){p.receipt.history=p.receipt.history||[];p.receipt.history.push({at:new Date().toISOString(),field:'amount',before:p.receipt.amount,after:v});p.receipt.dirty=true;}
+  p.receipt.amount=v;
+  if(p.receipt.no)p.receipt.dirty=!p.receipt.lastIssued||p.receipt.lastIssued!==receiptContentSnapshot(p);
+}
+/* グループ（申込者＋お連れ様）の領収書金額を再計算：別会計のお連れ様は各自の額、非分割は申込者に合算 */
+function recomputeGroupReceipt(e,main){
+  const comps=companionsOf(e,main.id);let merged=0;
+  comps.forEach(c=>{
+    if(c.receipt.split){ if(!(Number(c.receipt.amount)>0))setReceiptAmount(c,Number(c.amount)||0); }
+    else { merged+=Number(c.amount)||0; setReceiptAmount(c,0); }
+  });
+  setReceiptAmount(main,(Number(main.amount)||0)+merged);
+}
+/* お連れ様を別会計にする（元の金額から分割）。代表者が人数分決済済みならお連れ様も支払済扱いにする */
+function receiptSplitCompanion(eid,mainId,compId){
+  const e=getEvent(eid),main=e.participants.find(x=>x.id===mainId),c=e.participants.find(x=>x.id===compId);
+  if(!main||!c)return;
+  c.receipt.split=true;
+  if(!(Number(c.receipt.amount)>0))c.receipt.amount=Number(c.amount)>0?Number(c.amount):(Number(e.fee)||0);
+  if(!c.receipt.name)c.receipt.name=c.company||c.name||'';
+  if(!c.receipt.note)c.receipt.note='懇親会費として';
+  if(main.payStatus==='paid'&&c.payStatus!=='paid'&&c.status!=='cancel'){c.payStatus='paid';c.payMethod=c.payMethod||'代表者決済';if(main.orderId&&!c.orderId)c.orderId=main.orderId;if(!c.paidAt)c.paidAt=main.paidAt||new Date().toISOString();}
+  recomputeGroupReceipt(e,main);
+  rcptOpen[mainId]=true; // 会計を分けたらアコーディオンは閉じない
+  save();render();
+}
+/* 別会計を解除して申込者の領収書に合算し直す */
+function receiptMergeCompanion(eid,mainId,compId){
+  const e=getEvent(eid),main=e.participants.find(x=>x.id===mainId),c=e.participants.find(x=>x.id===compId);
+  if(!main||!c)return;
+  c.receipt.split=false;
+  recomputeGroupReceipt(e,main);
+  rcptOpen[mainId]=true;
+  save();render();
+}
+/* 受付画面用: お連れ様の別会計トグル（フラグを立て、金額・宛名は受付リストのインライン欄で編集） */
+function receptionToggleSplit(eid,compId,checked){
+  const e=getEvent(eid),c=e.participants.find(x=>x.id===compId);if(!c)return;
+  const main=c.companionOf&&e.participants.find(x=>x.id===c.companionOf);
+  c.receipt.split=!!checked;
+  if(checked){
+    if(!(Number(c.receipt.amount)>0))c.receipt.amount=Number(c.amount)>0?Number(c.amount):(Number(e.fee)||0);
+    if(!c.receipt.name)c.receipt.name=c.company||c.name||'';
+    if(main&&main.payStatus==='paid'&&c.payStatus!=='paid'&&c.status!=='cancel'){c.payStatus='paid';c.payMethod=c.payMethod||'代表者決済';}
+  }
+  if(main)recomputeGroupReceipt(e,main);
+  save();render();
+}
 /* ---- 領収書 採番・税計算・敬称（領収書作成ツールの仕様に準拠） ---- */
 const CORPORATE_KEYWORDS=['株式会社','合同会社','有限会社','合資会社','合名会社','一般社団法人','公益社団法人','一般財団法人','公益財団法人','NPO法人','npo法人','医療法人','学校法人','社会福祉法人','協同組合','事業協同組合','協会','財団','機構','組合'];
 function honorificFor(name){return CORPORATE_KEYWORDS.some(kw=>String(name||'').includes(kw))?'御中':'様';}
@@ -1227,10 +1348,13 @@ async function pushReceiptRecords(e,ps){
   const r=await recendSend({items},'/receipts');
   if(!r.ok)alert('注意: 領収書データの保存（受取人ページ用）に失敗しました。メール自体は送信済みです。\n'+(r.error||r.status||'')+(r.data&&r.data.error?'\n'+r.data.error:''));
 }
+/* 発行/再発行で件名・本文テンプレートを出し分ける（p.receipt.reissue=再発行送信時のみtrue） */
+function receiptMailSubjTpl(p){const s=store.settings;return p.receipt.reissue?(s.receiptReSubj||RC_RE_SUBJ_DEFAULT):(s.receiptSubj||RC_SUBJ_DEFAULT);}
+function receiptMailBodyTpl(p){const s=store.settings;return p.receipt.reissue?(s.receiptReBody||RC_RE_BODY_DEFAULT):(s.receiptBody||RC_BODY_DEFAULT);}
 /* 領収書メールの本文: 券面は本文に出さず添付ファイル(PNG)で送る。申込番号を必ず明記し、修正用ページの案内を付ける */
 function receiptMailHTML(e,p){
   const s=store.settings;const orderNo=p.groupId||'';
-  const bodyTpl=s.receiptBody||RC_BODY_DEFAULT;
+  const bodyTpl=receiptMailBodyTpl(p);
   const body=esc(mergeReceipt(bodyTpl,e,p)).replace(/\n/g,'<br>');
   let head='<div style="font-family:\'Hiragino Kaku Gothic ProN\',\'Yu Gothic\',Meiryo,sans-serif;font-size:13px;line-height:1.9;color:#1f2733;margin-bottom:18px">'
     +body+'</div>';
@@ -1393,7 +1517,7 @@ async function sendReceipt(eid,pid){
   const dispNo=issueReceiptNo(p); // 採番（編集後の再送は IS-Exxxxx-1… ＋（再））
   const png=await receiptPngBase64(e,p);
   if(!png){alert('領収書PNGの生成に失敗しました。');return;}
-  const payload={type:'receipt',to:p.email,subject:mergeReceipt(store.settings.receiptSubj||RC_SUBJ_DEFAULT,e,p),event:{name:e.name,date:e.date},receipt:{no:dispNo,name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'懇親会費として'},
+  const payload={type:'receipt',to:p.email,subject:mergeReceipt(receiptMailSubjTpl(p),e,p),event:{name:e.name,date:e.date},receipt:{no:dispNo,name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'懇親会費として'},
     attachments:[{filename:dispNo+'.png',content:png}],
     html:receiptMailHTML(e,p)+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')};
   const r=await recendSend(payload);p.receipt.issued=true;p.receipt.issuedAt=new Date().toISOString();
@@ -1458,7 +1582,7 @@ async function bulkSendReceipts(e,targets){
   for(const {p,mid,wasDirty,prevNo} of recs){
     const png=await receiptPngBase64(e,p);
     const dispNo=receiptDisplayNo(p);
-    const payload={type:'receipt',to:p.email,subject:mergeReceipt(store.settings.receiptSubj||RC_SUBJ_DEFAULT,e,p),event:{name:e.name,date:e.date},receipt:{no:dispNo,name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'懇親会費として'},
+    const payload={type:'receipt',to:p.email,subject:mergeReceipt(receiptMailSubjTpl(p),e,p),event:{name:e.name,date:e.date},receipt:{no:dispNo,name:p.receipt.name||p.company||p.name,amount:p.receipt.amount??p.amount,note:p.receipt.note||'懇親会費として'},
       attachments:png?[{filename:dispNo+'.png',content:png}]:undefined,
       html:receiptMailHTML(e,p)+(workerBase()?'<img src="'+workerBase()+'/open?mid='+encodeURIComponent(mid)+'" width="1" height="1" alt="" style="display:none">':'')};
     const r=await recendSend(payload);
