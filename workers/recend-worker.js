@@ -245,10 +245,11 @@ async function sendPayload(payload, env) {
     return sendMany(payload.messages || [], env);
   }
   if (payload.type === 'receipt') {
-    return sendMany([{ to: payload.to, subject: '【領収書】' + (payload.event?.name || ''), html: payload.html, attachments: payload.attachments }], env);
+    // 件名は管理アプリの「領収書メール」設定（payload.subject）を優先。旧クライアント互換で既定値をフォールバック
+    return sendMany([{ to: payload.to, subject: payload.subject || ('【領収書】' + (payload.event?.name || '')), html: payload.html, attachments: payload.attachments }], env);
   }
   if (payload.type === 'receipt_batch') {
-    return sendMany((payload.items || []).map((it) => ({ to: it.to, subject: '【領収書】' + (payload.event?.name || ''), html: it.html, attachments: it.attachments })), env);
+    return sendMany((payload.items || []).map((it) => ({ to: it.to, subject: it.subject || payload.subject || ('【領収書】' + (payload.event?.name || '')), html: it.html, attachments: it.attachments })), env);
   }
   return null;
 }

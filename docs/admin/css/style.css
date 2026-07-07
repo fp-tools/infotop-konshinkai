@@ -117,3 +117,7 @@ svg{flex:none}
 .popwrap:hover .popover{display:block}
 .popover a{display:block;padding:5px 6px;border-radius:6px;font-size:12.5px;color:var(--ink)}
 .popover a:hover{background:var(--brand-soft);color:var(--brand-d)}
+
+/* 一覧（受付・領収書など）のインライン編集を省スペース化: 入力欄と、それを含むセルの余白を詰めて1行の高さを低くする（テキストのみのセル・モーダル内フォームには影響しない） */
+table td input:not([type=checkbox]),table td select,table td textarea{padding:5px 8px;font-size:13px;border-radius:7px}
+table td:has(input:not([type=checkbox])),table td:has(select),table td:has(textarea){padding-top:5px;padding-bottom:5px}
