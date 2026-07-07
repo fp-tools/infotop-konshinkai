@@ -861,9 +861,9 @@ function tabReception(e){
     +'<td>'+(p.checkedIn?'<span class="tag ok">'+ic('check',11)+' 受付済</span>':'<span class="tag gray">未</span>')+'</td>'
     +'<td>'+(comp?'<span style="color:var(--muted)">└ </span><span class="tag gray">連れ</span> ':'')+'<b>'+esc(p.name)+'</b>'+(p.kana?'<div class="hint">'+(comp?'　':'')+esc(p.kana)+'</div>':'')+(p.company?'<div class="hint">'+esc(p.company)+'</div>':'')+'</td>'
     +'<td>'+(p.groupId?esc(p.groupId):'-')+'</td>'
-    +'<td><input type="number" value="'+(p.amount??0)+'" style="width:100px" onchange="setAmount(\''+e.id+'\',\''+p.id+'\',this.value)"></td>'
+    +'<td style="white-space:nowrap">'+yen(p.amount||0)+'</td>'
     +'<td>'+payBadgeEditable(e.id,p)+'</td>'
-    +'<td><input value="'+esc(p.receipt.name||'')+'" style="min-width:140px" onchange="setReceiptName(\''+e.id+'\',\''+p.id+'\',this.value)">'
+    +'<td>'+(esc(p.receipt.name)||'<span class="hint">（未設定）</span>')
       +(comp?'<label class="chk" style="margin-top:5px;font-size:11.5px" title="このお連れ様を申込者と別会計にして、別々の領収書を発行します"><input type="checkbox" '+(p.receipt.split?'checked':'')+' onchange="receptionToggleSplit(\''+e.id+'\',\''+p.id+'\',this.checked)"> 別会計にする</label>':'')+'</td>'
     +'<td class="flex">'+(p.checkedIn?'<button class="btn sm" onclick="undoCheckin(\''+e.id+'\',\''+p.id+'\')">取消</button>':'<button class="btn sm primary" onclick="receptionConfirm(\''+e.id+'\',\''+p.id+'\')">受付</button>')+'<button class="btn sm danger" onclick="markCancel(\''+e.id+'\',\''+p.id+'\')">欠席</button></td></tr>';});
   h+='</tbody></table></div>';
@@ -973,7 +973,7 @@ let _payMethod='cash';
 function receptionConfirm(eid,pid,fromScan){
   const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);_payMethod='cash';const paid=p.payStatus==='paid';let payUI;
   if(paid){payUI='<div class="card pad" style="background:var(--ok-soft);border-color:#bfe9d3"><b style="color:var(--ok)">'+ic('check',14)+' 決済済み</b> <span class="hint">'+esc(p.payMethod||'')+(p.orderId?' / 注文ID '+esc(p.orderId):'')+'</span><div class="hint" style="margin-top:4px">人数・領収書の変更がなければ、このまま受付完了できます。</div></div>';}
-  else{payUI='<div class="card pad" style="background:var(--danger-soft);border-color:#f3c6c2"><b style="color:var(--danger)">未払い</b> <span class="hint">その場で決済します（請求額：<b>'+yen(p.amount)+'</b>）</span><div class="pill-toggle" style="margin-top:10px"><button id="pm_cash" class="on" onclick="selPayMethod(\'cash\')">'+ic('cash',14)+' 現金</button><button id="pm_online" onclick="selPayMethod(\'online\')">'+ic('card',14)+' オンライン</button></div><div id="payCash" style="margin-top:12px"><div class="row"><label class="fld" style="flex:1"><span>受領金額</span><input id="cashRecv" type="number" value="'+(p.amount||0)+'" oninput="calcChange('+(p.amount||0)+')"></label><label class="fld" style="flex:1"><span>お釣り</span><input id="cashChange" readonly value="¥0" style="background:#f6f8fb;font-weight:700"></label></div></div><div id="payOnline" style="display:none;margin-top:12px"><button class="btn" onclick="openPayPage(\''+eid+'\',\''+pid+'\')">'+ic('card',14)+' インフォトップ決済ページを開く</button><label class="fld" style="margin-top:10px"><span>注文ID <span class="hint">決済完了後に入力（Webhook同期でも自動更新）</span></span><input id="onlineOrder" value="'+esc(p.orderId||'')+'" placeholder="例）9999999"></label></div></div>';}
+  else{payUI='<div class="card pad" style="background:var(--danger-soft);border-color:#f3c6c2"><b style="color:var(--danger)">未払い</b> <span class="hint">その場で決済します（請求額：<b>'+yen(p.amount)+'</b>）</span><div class="pill-toggle" style="margin-top:10px"><button id="pm_cash" class="on" onclick="selPayMethod(\'cash\')">'+ic('cash',14)+' 現金</button><button id="pm_online" onclick="selPayMethod(\'online\')">'+ic('card',14)+' オンライン</button></div><div id="payCash" style="margin-top:12px"><div class="row"><label class="fld" style="flex:1"><span>受領金額</span><input id="cashRecv" type="number" value="'+(p.amount||0)+'" oninput="calcChange('+(p.amount||0)+')"></label><label class="fld" style="flex:1"><span>お釣り</span><input id="cashChange" readonly value="¥0" style="background:#f6f8fb;font-weight:700"></label></div></div><div id="payOnline" style="display:none;margin-top:12px"><button class="btn" onclick="openPayPage(\''+eid+'\',\''+pid+'\')">'+ic('card',14)+' インフォトップ決済ページを開く</button><div id="payPageLinks"></div><label class="fld" style="margin-top:10px"><span>注文ID <span class="hint">決済完了後に入力（Webhook同期でも自動更新）</span></span><input id="onlineOrder" value="'+esc(p.orderId||'')+'" placeholder="例）9999999"></label></div></div>';}
   modal('受付・本人確認','<div class="kv" style="margin-bottom:12px;font-size:14px"><div style="width:100%;font-size:18px;font-weight:700">'+esc(p.name)+' <span class="hint" style="font-weight:400">'+esc(p.kana)+'</span></div><div><b>会社</b>'+(esc(p.company)||'-')+'</div><div><b>メール</b>'+(esc(p.email)||'-')+'</div><div><b>申込G</b>'+(esc(p.groupId)||'-')+'</div><div><b>二次会</b>'+(p.secondParty?'参加':'-')+'</div></div><div class="row" style="margin-bottom:6px"><label class="fld" style="flex:1"><span>参加費（当日変更可）</span><input id="rcAmount" type="number" value="'+(p.amount??0)+'"></label><label class="fld" style="flex:1"><span>領収書 宛名（変更可）</span><input id="rcName" value="'+esc(p.receipt.name||p.company||p.name)+'"></label></div>'+payUI,
     [{label:'欠席(減)',cls:'btn danger',on:"markCancel('"+eid+"','"+pid+"');closeModal()"},{label:paid?'受付完了':'決済して受付完了',cls:'btn ok',on:"completeReception('"+eid+"','"+pid+"')"}],520);
 }
@@ -1011,13 +1011,18 @@ function savePayStatus(eid,pid){
   save();closeModal();render();
   if(grp)alert('決済額がお連れ様分を含むため、お連れ様 '+grp+'名も支払済み（代表者決済）にしました。');
 }
+/* インフォトップ注文ページURL（商品IDから生成）。決済ページは https://www.infotop.jp/order.php?iid=商品ID */
+function infotopOrderUrl(itemId){return 'https://www.infotop.jp/order.php?iid='+encodeURIComponent(String(itemId).trim());}
 function openPayPage(eid,pid){
-  const s=store.settings;if(!s.payPageUrl){alert('設定で「インフォトップ決済ページURL」を登録してください。');go('settings');return;}
-  const e=getEvent(eid),p=e&&e.participants.find(x=>x.id===pid);
-  const itemId=eventItemIds(e)[0]||s.payItemId;
-  let url=s.payPageUrl;const params=[];if(itemId)params.push('item='+encodeURIComponent(itemId));if(p&&p.email)params.push('email='+encodeURIComponent(p.email));
-  if(params.length)url+=(url.includes('?')?'&':'?')+params.join('&');
-  window.open(url,'_blank');
+  const e=getEvent(eid);
+  const ids=eventItemIds(e).length?eventItemIds(e):(store.settings.payItemId?[store.settings.payItemId]:[]);
+  if(!ids.length){alert('この開催に商品IDが登録されていません。開催設定の「インフォトップ商品ID」を登録してください。');return;}
+  if(ids.length===1){window.open(infotopOrderUrl(ids[0]),'_blank');return;}
+  // 商品IDが複数ある場合は一覧を表示し、該当ページを選んで開く
+  const box=document.getElementById('payPageLinks');
+  const rows=ids.map(id=>'<div class="between" style="padding:6px 0;border-top:1px solid var(--line)"><span><b>商品ID '+esc(id)+'</b> <span class="hint">'+esc(infotopOrderUrl(id))+'</span></span><button class="btn sm primary" onclick="window.open(\''+infotopOrderUrl(id)+'\',\'_blank\')">開く</button></div>').join('');
+  if(box){box.innerHTML='<div class="hint" style="margin:8px 0 2px">この開催には商品IDが複数登録されています。該当の決済ページを開いてください。</div>'+rows;}
+  else{window.open(infotopOrderUrl(ids[0]),'_blank');} // 受付モーダル外から呼ばれた場合は先頭を開く
 }
 function completeReception(eid,pid){
   const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);
@@ -1119,12 +1124,23 @@ function previewAutoReply(eid){
 function receiptTargets(e){
   return (e.participants||[]).filter(p=>p.status!=='cancel'||p.payStatus==='paid'||p.receipt.no||(Number(p.paidAmount)||0)>0);
 }
-/* ---- 領収書テーブルのセル部品（申込者・お連れ様で共通） ---- */
+/* ---- 領収書テーブルのセル部品（申込者・お連れ様で共通） ----
+   通常は閲覧のみの表示。上部メニューの「編集」を押した編集モード時だけ入力欄になり、
+   「保存」で一括反映（rcptSaveEdit）、「取消」で破棄する。 */
 function rcptContentInputs(e,p){
+  const nm=p.receipt.name||p.company||p.name, amt=(p.receipt.amount??p.amount??0), nt=p.receipt.note||'懇親会費として';
+  if(!rcptEditMode){
+    return '<div style="display:flex;flex-direction:column;gap:3px;min-width:200px;font-size:12px">'
+      +'<div><span style="color:#8792a6">宛名</span>　'+esc(nm)+'</div>'
+      +'<div><span style="color:#8792a6">金額</span>　'+yen(amt)+'</div>'
+      +'<div><span style="color:#8792a6">但書</span>　'+esc(nt)+'</div>'
+      +'</div>';
+  }
+  const lbl='display:flex;align-items:center;gap:6px;font-size:11px;color:#5f6b82';
   return '<div style="display:flex;flex-direction:column;gap:4px;min-width:200px">'
-    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#5f6b82"><span style="flex:0 0 44px">宛名</span><input value="'+esc(p.receipt.name||p.company||p.name)+'" style="flex:1" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'name\',this.value)"></label>'
-    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#5f6b82"><span style="flex:0 0 44px">金額</span><input type="number" value="'+(p.receipt.amount??p.amount??0)+'" style="flex:1" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'amount\',this.value)"></label>'
-    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#5f6b82"><span style="flex:0 0 44px">但し書き</span><input value="'+esc(p.receipt.note||'懇親会費として')+'" style="flex:1" onchange="rcpt(\''+e.id+'\',\''+p.id+'\',\'note\',this.value)"></label>'
+    +'<label style="'+lbl+'"><span style="flex:0 0 44px">宛名</span><input class="rcpt-edit" data-pid="'+p.id+'" data-k="name" value="'+esc(nm)+'" style="flex:1"></label>'
+    +'<label style="'+lbl+'"><span style="flex:0 0 44px">金額</span><input class="rcpt-edit" data-pid="'+p.id+'" data-k="amount" type="number" value="'+amt+'" style="flex:1"></label>'
+    +'<label style="'+lbl+'"><span style="flex:0 0 44px">但し書き</span><input class="rcpt-edit" data-pid="'+p.id+'" data-k="note" value="'+esc(nt)+'" style="flex:1"></label>'
     +'</div>';
 }
 function rcptPayCell(p){return p.status==='cancel'?'<span class="tag gray">取消</span>':p.payStatus==='paid'?'<span class="tag ok">済</span>':'<span class="tag warn">未</span>';}
@@ -1148,7 +1164,7 @@ function receiptMainRow(e,p){
   const open=rcptOpen[p.id]||comps.some(c=>c.receipt.split); // 会計を分けた（別会計あり）場合は開いたまま
   const orderCell='<div><b>'+(p.groupId?esc(p.groupId):'<span class="tag warn" title="申込番号がないと受取人ページで再取得できません">無</span>')+'</b></div>'
     +'<div class="hint" style="margin-top:4px">'+(1+comps.length)+'名</div>'
-    +(comps.length?'<button class="btn sm" style="margin-top:6px" onclick="toggleRcptAccordion(\''+p.id+'\')">'+(open?'▼':'▶')+' お連れ様 '+comps.length+'名</button>':'');
+    +(comps.length?'<button class="btn sm" style="margin-top:6px;font-weight:700" onclick="toggleRcptAccordion(\''+p.id+'\')" title="お連れ様の領収書を表示">'+(open?'▼':'▶')+' '+comps.length+'名</button>':'');
   return '<tr'+(p.status==='cancel'?' style="background:#fdf6f5"':'')+'>'
     +'<td style="text-align:center"><input type="checkbox" class="rcpt-sel" data-pid="'+p.id+'"></td>'
     +'<td>'+(p.status==='cancel'?'<div style="margin-bottom:4px"><span class="tag danger">キャンセル'+(p.payStatus==='paid'?'（支払済）':'')+'</span></div>':'')+orderCell+'</td>'
@@ -1185,11 +1201,16 @@ function tabReceipts(e){
   const issued=ps.filter(p=>p.receipt.no).length;
   const mains=ps.filter(p=>isMain(p));
   const orphans=ps.filter(p=>!isMain(p)&&!mains.some(m=>m.id===p.companionOf)); // 申込者が対象外のお連れ様は単独表示
+  const editBtns=rcptEditMode
+    ? '<button class="btn sm" onclick="rcptCancelEdit()">取消</button><button class="btn sm primary" onclick="rcptSaveEdit(\''+e.id+'\')">'+ic('check',14)+' 保存</button>'
+    : '<button class="btn sm" onclick="rcptEnterEdit()">編集</button>';
   let h='<div class="card pad"><div class="between" style="margin-bottom:6px"><b>'+ic('receipt',16)+' 領収書発行</b><div class="flex">'
+    +editBtns
     +'<button class="btn sm" onclick="autoGroupReceipts(\''+e.id+'\')">申込グループで自動まとめ</button>'
     +'<button class="btn sm" onclick="downloadReceiptZip(\''+e.id+'\')">'+ic('download',14)+' 発行済みをZIPで一括DL'+(issued?'（'+issued+'件）':'')+'</button>'
     +'<button class="btn sm" onclick="sendCheckedReceipts(\''+e.id+'\')">チェックした人に送信</button>'
     +'<button class="btn sm primary" onclick="openBulkReceipts(\''+e.id+'\')">一括発行・送信</button></div></div>'
+    +(rcptEditMode?'<div class="banner" style="margin-bottom:10px">編集モード：宛名・金額・但し書きを変更し、上部の<b>「保存」</b>で一括反映します（「取消」で破棄）。</div>':'')
     +'<div class="hint" style="margin-bottom:10px">領収書はPNG画像を<b>メールに添付</b>して送信します。番号は発行順の連番（IS-E00001）で、発行後に宛名・金額・但書を変更すると次回送信時に IS-E00001-1 の形式で「（再）」として再発行されます。<b>お連れ様は申込番号の「▼お連れ様」から表示</b>し、「別会計にする」で申込者の合算額から切り出して個別に発行できます（代表者が人数分を決済済みならお連れ様も支払済に）。</div>'
     +'<div style="overflow:auto"><table><thead><tr><th><input type="checkbox" onchange="document.querySelectorAll(\'.rcpt-sel\').forEach(c=>c.checked=this.checked)" title="全選択"></th><th>申込番号</th><th>申込人名</th><th>宛名・金額・但し書</th><th>送信先</th><th>支払</th><th>領収書・状態</th><th></th></tr></thead><tbody>';
   mains.forEach(m=>{
@@ -1235,6 +1256,15 @@ function rcpt(eid,pid,k,v){const p=getEvent(eid).participants.find(x=>x.id===pid
   // 内容が発行時と同じに戻った場合はdirtyを解除（（再）を付けず枝番も振らない）
   if(p.receipt.no&&['name','amount','note'].includes(k))p.receipt.dirty=!p.receipt.lastIssued||p.receipt.lastIssued!==receiptContentSnapshot(p);
   save();}
+/* ---- 領収書 一括編集モード（上部メニューの「編集」で切替） ---- */
+let rcptEditMode=false; // trueの間だけ宛名・金額・但書が入力欄になる（端末内メモリ）
+function rcptEnterEdit(){rcptEditMode=true;render();}
+function rcptCancelEdit(){rcptEditMode=false;render();} // DOMの変更は破棄（storeは未変更）
+/* 表示中の全入力欄をまとめてstoreへ反映（rcptが履歴・再発行フラグ・保存まで処理） */
+function rcptSaveEdit(eid){
+  document.querySelectorAll('#view input.rcpt-edit').forEach(inp=>{rcpt(eid,inp.dataset.pid,inp.dataset.k,inp.value);});
+  rcptEditMode=false;render();
+}
 /* ---- お連れ様アコーディオン／別会計（会計分割） ---- */
 let rcptOpen={}; // 申込者id -> アコーディオン開閉（端末内メモリ）
 function toggleRcptAccordion(mainId){rcptOpen[mainId]=!rcptOpen[mainId];render();}
