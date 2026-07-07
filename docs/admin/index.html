@@ -7,10 +7,11 @@
 <title>懇親会管理システム | インフォトップ</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<!-- jsQR: cdnjs は jsQR を配信していない（404）ため jsdelivr を使用。失敗時は unpkg にフォールバック -->
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://unpkg.com/jsqr@1.4.0/dist/jsQR.js';document.head.appendChild(s);"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<link rel="stylesheet" href="css/style.css?v=20260707a">
+<link rel="stylesheet" href="css/style.css?v=20260707b">
 <style>
 #loginMask{position:fixed;inset:0;background:#10182a;z-index:1000;display:none;align-items:center;justify-content:center}
 #loginBox{background:#fff;border-radius:14px;padding:34px 36px;width:360px;max-width:92vw;box-shadow:0 10px 40px rgba(0,0,0,.35)}
@@ -47,6 +48,6 @@
 </div>
 <div id="modalRoot"></div>
 
-<script src="js/app.js?v=20260707a"></script>
+<script src="js/app.js?v=20260707b"></script>
 </body>
 </html>
