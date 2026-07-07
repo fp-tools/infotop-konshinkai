@@ -1366,7 +1366,7 @@ function receiptMailHTML(e,p){
       +'<a href="'+esc(s.claimUrl)+'" style="color:#2f6df6">'+esc(s.claimUrl)+'</a><br>'
       +'ログインには「このメールを受信したメールアドレス」と「上記のお申込番号」をご入力ください。期限を過ぎた修正は事務局までご連絡ください。</div>';
   }
-  return head+foot;
+  return head+foot; // 共通署名（会社情報フッター）はWorker側で全メールに自動付与される
 }
 function autoGroupReceipts(eid){
   const e=getEvent(eid),groups={};
@@ -1436,7 +1436,8 @@ function qrImgUrl(text,size){const b=workerBase();return b?b+'/qr?size='+size+'&
 function workerBase(){return (store.settings.recendUrl||WORKER_URL).replace(/\/+$/,'');}
 /* テキスト版本文: {{qr}} は画像を出せないため案内文に置換 */
 function mergeText(t,e,p){return mergeBody(t,e,p).replace(/{{qr}}/g,'（受付用QRコードはHTMLメールでご覧いただけます）');}
-/* HTML版本文: 差込タグ反映 → エスケープ → 改行→<br> → {{qr}}をQR画像に → 開封計測ピクセル付与 */
+/* HTML版本文: 差込タグ反映 → エスケープ → 改行→<br> → {{qr}}をQR画像に → 開封計測ピクセル付与
+   ※共通署名（会社情報フッター）はWorker側で全メールに自動付与される */
 function mergeBodyHTML(t,e,p,mid){
   let html=esc(mergeBody(t,e,p)).replace(/\n/g,'<br>');
   html=html.replace(/{{qr}}/g,'</p><div style="text-align:center;margin:16px 0"><img src="'+qrImgUrl(qrToken(e,p),220)+'" width="220" height="220" alt="受付QRコード" style="display:inline-block;border:1px solid #e4e8ef;border-radius:8px"><div style="font-size:12px;color:#6b7686;margin-top:6px">受付QRコード（当日受付でご提示ください）</div></div><p style="margin:0">');
