@@ -446,8 +446,8 @@ function applyImport(){
  * 領収書に記載する日付は「注文確定日」を使用（p.paidAtに保存され券面の日付になる）。 */
 let _payCsvStaging=null;
 function openPayCsvImport(eid){
-  modal('申込管理シート取込（決済状況の反映）',
-    '<div class="banner">スプレッドシート「申込管理」からダウンロードしたCSVを取り込みます。<b>申込番号（E列）</b>をキーに、決済ステータス（M列）・注文ID・決済額・<b>注文確定日（領収書の日付に使用）</b>を参加者リストへ反映します。決済APIを受け取れなかった場合のバックアップ手段です。</div>'
+  modal('申込管理シート取込（1ファイルで完結）',
+    '<div class="banner">スプレッドシート「申込管理」からダウンロードしたCSVを<b>1枚</b>取り込むだけで、参加者リストを丸ごと反映します。<b>申込番号（E列）</b>をキーに、氏名・フリガナ・法人・メールで<b>参加者を新規作成／更新</b>し、領収書（宛名・但し書き・要否）＋決済ステータス（M列）・注文ID・決済額・<b>注文確定日（領収書の日付）</b>・お連れ様（連れ列＝「同上」行）までまとめて取り込みます。<span class="hint">但し書きが空欄／「なし」の場合は「交流会費として」を自動設定。「不参加」行は取り込みません。</span></div>'
     +'<label class="fld"><span>CSVファイルを選択</span><input type="file" id="payCsvFile" accept=".csv,text/csv"></label><div id="payCsvPreview"></div>',
     [{label:'閉じる',cls:'btn',on:'closeModal()'}],660);
   document.getElementById('payCsvFile').addEventListener('change',ev=>{
@@ -467,9 +467,11 @@ function openPayCsvImport(eid){
 function mapSheetStatus(s){
   s=String(s||'').trim();if(!s)return '';
   if(/キャンセル|取消/.test(s))return 'cancel';
-  if(/当日/.test(s))return 'onsite';
   if(/未/.test(s))return 'unpaid';
-  if(/済|完了|入金|支払/.test(s))return 'paid';
+  // 「済」を含むもの（事前済／当日済／入金済）は支払済み。※「当日」判定より先に評価する
+  if(/済|完了|入金/.test(s))return 'paid';
+  if(/当日/.test(s))return 'onsite'; // 「当日」「当日予定」（未収・当日徴収予定）
+  if(/支払/.test(s))return 'paid';
   return '';
 }
 function parseSheetDate(v,e){
@@ -481,6 +483,9 @@ function parseSheetDate(v,e){
   if(m){const y=(e.date||todayISO()).slice(0,4);return y+'-'+pad(m[1])+'-'+pad(m[2]);} // 年なし（6/19等）は開催年で補完
   return '';
 }
+/* 但し書き: 空欄／「なし」は「交流会費として」を既定にする（この開催の領収書ポリシー） */
+const RECEIPT_NOTE_DEFAULT='交流会費として';
+function sheetReceiptNote(v){const s=String(v||'').trim();return (s===''||s==='なし')?RECEIPT_NOTE_DEFAULT:s;}
 function previewPayCsv(eid,text){
   const box=document.getElementById('payCsvPreview');
   const rows=parseCSV(text);
@@ -488,51 +493,98 @@ function previewPayCsv(eid,text){
   const hi=rows.findIndex(r=>/申込\s*番号/.test(String(r[4]||'').replace(/[\r\n]/g,'')));
   if(hi<0){box.innerHTML='<p class="hint" style="color:var(--danger)">E列に「申込番号」のヘッダーが見つかりません。「申込管理」シートのCSVかご確認ください。</p>';return;}
   const header=rows[hi];
-  const col={no:4,status:12,order:null,amount:null,date:null};
-  for(let i=5;i<header.length&&i<=20;i++){
-    const h=String(header[i]||'').replace(/[\s\r\n]/g,'');
-    if(/注文ID|オーダーID/i.test(h))col.order=i;
-    else if(/決済額|決済金額/.test(h))col.amount=i;
-    else if(/確定日|決済日|入金日/.test(h))col.date=i;
-  }
+  // 決済列は従来どおりM列(=12)を既定にしつつ、他項目はヘッダー名で検出（列位置の差異に強くする）
+  const col={no:4,status:12,order:null,amount:null,date:null,name:null,kana:null,company:null,email:null,tsure:null,join:null,rNeed:null,rName:null,rNote:null};
+  const norm=h=>String(h||'').replace(/[\s\r\n]/g,'');
+  header.forEach((h,i)=>{const n=norm(h);
+    if(col.name==null&&n==='氏名')col.name=i;
+    if(col.kana==null&&(n==='ふりがな'||n==='フリガナ'))col.kana=i;
+    if(col.company==null&&(n==='法人名'||n==='会社名'||n.includes('法人')||n.includes('会社')))col.company=i;
+    if(col.email==null&&n.includes('メール'))col.email=i;
+    if(col.tsure==null&&n.includes('連れ'))col.tsure=i;
+    if(col.join==null&&n==='一部')col.join=i;
+    if(/注文ID|オーダーID/i.test(n))col.order=col.order??i;
+    if(/決済額|決済金額/.test(n))col.amount=col.amount??i;
+    if(/確定日|決済日|入金日/.test(n))col.date=col.date??i;
+    if(col.rNeed==null&&n==='領収書')col.rNeed=i;
+    if(col.rName==null&&n==='宛名')col.rName=i;
+    if(col.rNote==null&&(n==='但書'||n==='但し書き'||n==='但書き'))col.rNote=i;
+  });
   const e=getEvent(eid);
-  const recs=[];
+  const get=(r,c)=>c!=null?String(r[c]||'').trim():'';
+  const recs=[];let lastMain=null;
   for(let ri=hi+1;ri<rows.length;ri++){
     const r=rows[ri]||[];const no=String(r[4]||'').trim();
-    if(!no||!/\d/.test(no))continue;
-    recs.push({no,status:String(r[col.status]||'').trim(),order:col.order!=null?String(r[col.order]||'').trim():'',
-      amount:col.amount!=null?(Number(String(r[col.amount]||'').replace(/[^\d.-]/g,''))||0):0,
-      date:col.date!=null?String(r[col.date]||'').trim():''});
+    const nm=get(r,col.name);
+    if(/\d/.test(no)){
+      const rec={no,name:nm,kana:get(r,col.kana),company:get(r,col.company),email:get(r,col.email),
+        join:get(r,col.join),tsure:get(r,col.tsure),status:get(r,col.status),order:get(r,col.order),
+        amount:col.amount!=null?(Number(get(r,col.amount).replace(/[^\d.-]/g,''))||0):0,date:get(r,col.date),
+        rNeed:get(r,col.rNeed),rName:get(r,col.rName),rNote:get(r,col.rNote),companions:[]};
+      recs.push(rec);lastMain=rec;
+    }else if(lastMain&&nm&&(no==='同上'||(no===''&&lastMain.tsure==='あり'))){
+      // お連れ様行（申込番号＝「同上」）は直前の申込者にぶら下げる
+      lastMain.companions.push({name:nm,kana:get(r,col.kana),company:get(r,col.company),email:get(r,col.email),
+        receiptName:get(r,col.rName),receiptNote:get(r,col.rNote),receiptNeed:get(r,col.rNeed)});
+    }
   }
-  if(!recs.length){box.innerHTML='<p class="hint">データ行が見つかりません。</p>';return;}
+  const live=recs.filter(r=>r.join!=='不参加');
+  if(!live.length){box.innerHTML='<p class="hint">取込対象のデータ行が見つかりません。</p>';return;}
   const mains=(e.participants||[]).filter(isMain);
-  recs.forEach(rec=>{rec.p=mains.find(p=>String(p.groupId||'').trim()===rec.no)||null;});
-  const matched=recs.filter(r=>r.p),unmatched=recs.filter(r=>!r.p);
-  const stCount={};matched.forEach(r=>{const k=r.status||'(空欄)';stCount[k]=(stCount[k]||0)+1;});
-  _payCsvStaging={eid,recs};
-  box.innerHTML='<div class="divider"></div><div style="margin-bottom:8px"><b>'+recs.length+'件</b>を検出 → 参加者と一致 <b>'+matched.length+'件</b>'+(unmatched.length?' / <span style="color:var(--danger)">不一致 '+unmatched.length+'件（申込番号: '+esc(unmatched.map(r=>r.no).join(', '))+'）</span>':'')+'</div>'
-    +'<div class="hint" style="margin-bottom:8px">ステータス内訳: '+Object.keys(stCount).map(k=>esc(k)+' '+stCount[k]+'件').join(' / ')+'</div>'
-    +'<div class="card" style="max-height:220px;overflow:auto"><table><thead><tr><th>申込番号</th><th>参加者</th><th>決済</th><th>注文ID</th><th>決済額</th><th>注文確定日</th></tr></thead><tbody>'
-    +recs.slice(0,50).map(r=>'<tr'+(r.p?'':' style="background:var(--danger-soft)"')+'><td>'+esc(r.no)+'</td><td>'+(r.p?esc(r.p.name):'<span class="hint">一致なし</span>')+'</td><td>'+esc(r.status)+'</td><td>'+esc(r.order)+'</td><td>'+(r.amount?yen(r.amount):'-')+'</td><td>'+esc(r.date)+(r.date?'<span class="hint">→'+esc(parseSheetDate(r.date,e))+'</span>':'')+'</td></tr>').join('')
-    +'</tbody></table></div><div style="margin-top:12px;text-align:right"><button class="btn primary" onclick="applyPayCsv()">一致した'+matched.length+'件を反映する</button></div>';
+  const findExisting=rec=>mains.find(p=>rec.no&&String(p.groupId||'').trim()===rec.no)||(rec.email?mains.find(p=>p.email&&normEmail(p.email)===normEmail(rec.email)):null)||null;
+  let nNew=0,nUpd=0,nComp=0,nPay=0,nSkipNoName=0;
+  live.forEach(rec=>{rec._exist=findExisting(rec);
+    if(rec._exist)nUpd++;else if(rec.name)nNew++;else{nSkipNoName++;return;}
+    if(mapSheetStatus(rec.status))nPay++;nComp+=rec.companions.length;});
+  const nSkipJoin=recs.length-live.length;
+  const missCol=[['name','氏名'],['email','メール'],['rNote','但書'],['rName','宛名']].filter(([k])=>col[k]==null).map(x=>x[1]);
+  _payCsvStaging={eid,recs:live,col};
+  box.innerHTML='<div class="divider"></div>'
+    +'<div class="row" style="margin-bottom:10px">'+stat('申込者 新規',nNew+'名','')+stat('既存を更新',nUpd+'名','編集項目は保持')+stat('お連れ様',nComp+'名','')+stat('決済反映',nPay+'件','')+'</div>'
+    +(nSkipJoin?'<div class="hint" style="margin-bottom:6px">「不参加」'+nSkipJoin+'件は取り込みません。</div>':'')
+    +(nSkipNoName?'<div class="hint" style="margin-bottom:6px;color:var(--danger)">氏名が空の新規行 '+nSkipNoName+'件はスキップします。</div>':'')
+    +(missCol.length?'<div class="hint" style="margin-bottom:6px;color:var(--danger)">未検出の列: '+esc(missCol.join('・'))+'（そのままでも取込は続行します）</div>':'')
+    +'<div class="card" style="max-height:220px;overflow:auto"><table><thead><tr><th>申込番号</th><th>氏名</th><th>区分</th><th>決済</th><th>領収書（宛名／但書）</th><th>連れ</th></tr></thead><tbody>'
+    +live.slice(0,60).map(r=>'<tr><td>'+esc(r.no)+'</td><td>'+esc(r.name)+'</td><td>'+(r._exist?'<span class="tag gray">更新</span>':(r.name?'<span class="tag brand">新規</span>':'<span class="hint">—</span>'))+'</td><td>'+esc(r.status)+(r.date?'<span class="hint"> '+esc(parseSheetDate(r.date,e))+'</span>':'')+'</td><td>'+(r.rNeed&&/不要/.test(r.rNeed)?'<span class="hint">不要</span>':esc(r.rName||'-')+' / '+esc(sheetReceiptNote(r.rNote)))+'</td><td>'+(r.companions.length?esc(r.companions.map(c=>c.name).join('、')):'')+'</td></tr>').join('')
+    +'</tbody></table></div>'+(live.length>60?'<div class="hint">ほか '+(live.length-60)+' 件…</div>':'')
+    +'<div style="margin-top:12px;text-align:right"><button class="btn primary" onclick="applyPayCsv()">この内容で取り込む</button></div>';
 }
 function applyPayCsv(){
-  const {eid,recs}=_payCsvStaging||{};if(!recs)return;
-  const e=getEvent(eid);let upd=0;
+  const st0=_payCsvStaging||{};const {eid,recs}=st0;if(!recs)return;
+  const e=getEvent(eid);e.participants=e.participants||[];
+  let nw=0,upd=0,comp=0,pay=0,skip=0;
   recs.forEach(rec=>{
-    if(!rec.p)return;const p=rec.p;
-    const st=mapSheetStatus(rec.status);
-    if(st){p.payStatus=st;if(st==='paid'&&!p.payMethod)p.payMethod='オンライン';}
+    let p=rec._exist||(rec.no&&e.participants.find(x=>isMain(x)&&String(x.groupId||'').trim()===rec.no&&x.status!=='cancel'))
+      ||(rec.email?e.participants.find(x=>isMain(x)&&x.email&&normEmail(x.email)===normEmail(rec.email)&&x.status!=='cancel'):null);
+    if(!p){
+      if(!rec.name){skip++;return;} // 氏名なしの新規はスキップ（決済のみの行）
+      p=newParticipant({name:rec.name,kana:rec.kana,company:rec.company,email:rec.email,groupId:rec.no,amount:e.fee||0,source:'sheet'});
+      p.receipt.name=rec.company||rec.name;p.receipt.amount=p.amount;e.participants.push(p);nw++;
+    }else{
+      const setF=(f,v)=>{if(v&&!p.edited.includes(f))p[f]=v;};
+      setF('name',rec.name);setF('kana',rec.kana);setF('company',rec.company);setF('email',rec.email);
+      if(rec.no&&!p.edited.includes('groupId'))p.groupId=rec.no;
+      upd++;
+    }
+    // 領収書（宛名・要否・但し書き）
+    if(rec.rNeed&&!p.receipt.needEdited)p.receipt.need=/不要/.test(rec.rNeed)?'不要':'必要';
+    if(rec.rName&&(!p.receipt.name||p.receipt.name===p.company||p.receipt.name===p.name))p.receipt.name=rec.rName;
+    if(p.receipt.need!=='不要'&&(!p.receipt.note||p.receipt.note==='懇親会費として'||p.receipt.note===RECEIPT_NOTE_DEFAULT))p.receipt.note=sheetReceiptNote(rec.rNote);
+    // 決済
+    const pst=mapSheetStatus(rec.status);
+    if(pst){p.payStatus=pst;if(pst==='paid'&&!p.payMethod)p.payMethod='オンライン';pay++;}
     if(rec.order)p.orderId=rec.order;
     if(rec.amount>0){p.paidAmount=rec.amount;if(!p.edited.includes('amount'))p.amount=rec.amount;}
     const d=parseSheetDate(rec.date,e);
     if(d)p.paidAt=d; // 領収書の日付＝注文確定日
-    else if(st==='paid'&&!p.paidAt)p.paidAt=new Date().toISOString();
-    upd++;
+    else if(pst==='paid'&&!p.paidAt)p.paidAt=new Date().toISOString();
+    ensurePerson(p,e);
+    // お連れ様（連れ列＝「同上」行）
+    if(e.companionMode!=='single'&&rec.companions.length){const before=e.participants.length;syncCompanions(e,p,rec.companions);comp+=e.participants.length-before;}
   });
   const grp=reconcileGroupPayments(e); // 代表者の決済額がお連れ様分を含む場合の按分
   save();closeModal();render();
-  alert(upd+'件の決済状況を反映しました。'+(grp?'\nお連れ様 '+grp+'名を代表者決済に合算（支払済み扱い）にしました。':'')+'\n※領収書の日付には注文確定日が使用されます。');
+  alert('申込管理シートを取り込みました。\n申込者 新規'+nw+' / 更新'+upd+(comp?' / お連れ様 新規'+comp:'')+'\n決済反映 '+pay+'件'+(skip?' / 氏名なしスキップ'+skip:'')+(grp?'\nお連れ様 '+grp+'名を代表者決済に合算（支払済み扱い）':'')+'\n※領収書の日付には注文確定日、但し書き空欄は「'+RECEIPT_NOTE_DEFAULT+'」を使用。');
 }
 
 /* ---------- グループ決済の按分 ----------
