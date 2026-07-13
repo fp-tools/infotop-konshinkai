@@ -467,9 +467,11 @@ function openPayCsvImport(eid){
 function mapSheetStatus(s){
   s=String(s||'').trim();if(!s)return '';
   if(/キャンセル|取消/.test(s))return 'cancel';
-  if(/当日/.test(s))return 'onsite';
   if(/未/.test(s))return 'unpaid';
-  if(/済|完了|入金|支払/.test(s))return 'paid';
+  // 「済」を含むもの（事前済／当日済／入金済）は支払済み。※「当日」判定より先に評価する
+  if(/済|完了|入金/.test(s))return 'paid';
+  if(/当日/.test(s))return 'onsite'; // 「当日」「当日予定」（未収・当日徴収予定）
+  if(/支払/.test(s))return 'paid';
   return '';
 }
 function parseSheetDate(v,e){
