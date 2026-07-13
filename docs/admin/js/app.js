@@ -796,12 +796,18 @@ function cancelParticipant(eid,pid){
 }
 function removeImported(eid){
   const e=getEvent(eid);
-  const targets=e.participants.filter(p=>p.source==='csv');
-  if(!targets.length){alert('CSV/API取込分の参加者はいません。');return;}
-  if(!confirm('CSV/API取込で登録された参加者 '+targets.length+'名を削除します。\n（手動追加・当日参加の方は残ります。領収書発行済みの記録は受取人ページに残ります）\nCSVを差し替える場合は、削除後に新しいCSVを取り込んでください。よろしいですか？'))return;
+  // 取込系（CSV取込・フォームAPI・決済状況シート取込）で登録された参加者をまとめて削除
+  const isImported=p=>p.source==='csv'||p.source==='sheet'||p.source==='api';
+  const targets=e.participants.filter(isImported);
+  if(!targets.length){alert('CSV／決済状況シート取込分の参加者はいません。');return;}
+  if(!confirm('CSV取込・決済状況シート取込で登録された参加者 '+targets.length+'名を削除します。\n（手動追加・当日参加の方は残ります。領収書発行済みの記録は受取人ページに残ります）\n差し替える場合は、削除後に新しいデータを取り込んでください。よろしいですか？'))return;
   if(!confirm('本当に削除しますか？この操作は元に戻せません。'))return;
-  e.participants=e.participants.filter(p=>p.source!=='csv');
-  save();render();alert(targets.length+'名を削除しました。新しいCSVを取り込んでください。');
+  const delIds=new Set(targets.map(p=>p.id));
+  const before=e.participants.length;
+  // 取込分に加えて、削除される申込者にぶら下がるお連れ様（手動追加分含む）も除去して孤立を防ぐ
+  e.participants=e.participants.filter(p=>!isImported(p)&&!(p.companionOf&&delIds.has(p.companionOf)));
+  const removed=before-e.participants.length;
+  save();render();alert(removed+'名を削除しました。新しいデータを取り込んでください。');
 }
 function tabParticipants(e){
   const ps=(e.participants||[]).filter(p=>p.status!=='cancel');
@@ -814,7 +820,7 @@ function tabParticipants(e){
     +'<button class="btn sm" onclick="addParticipant(\''+e.id+'\')">'+ic('plus',14)+' 手動追加</button>'
     +'<button class="btn sm" onclick="bulkQR(\''+e.id+'\')">'+ic('qr',14)+' QR一括発行</button>'
     +'<button class="btn sm" onclick="exportParticipants(\''+e.id+'\')">'+ic('download',14)+' CSV出力</button>'
-    +'<button class="btn sm danger" onclick="removeImported(\''+e.id+'\')" title="CSVを差し替える場合に取込分を削除">取込分を削除</button></div></div>';
+    +'<button class="btn sm danger" onclick="removeImported(\''+e.id+'\')" title="CSV取込・決済状況シート取込で登録された分をまとめて削除（差し替え時に使用）">取込分を削除</button></div></div>';
   if(!ps.length&&!(e.participants||[]).some(p=>p.status==='cancel'))return h+emptyState(ic('users',40),'参加者がいません','フォームのCSV/APIを取り込むか、手動で追加してください。','');
   h+='<div class="card" style="overflow:auto"><table><thead><tr><th>申込番号<div class="hint" style="font-weight:400">申込日時</div></th><th>法人名・氏名</th><th>メール<div class="hint" style="font-weight:400">電話番号</div></th><th>種別</th><th>参加費<div class="hint" style="font-weight:400">決済状況</div></th><th>領収書</th><th>二次会</th><th></th></tr></thead><tbody>';
   sortedParticipants(e).forEach(p=>{const comp=!isMain(p);
