@@ -559,7 +559,7 @@ function applyPayCsv(){
     if(!p){
       if(!rec.name){skip++;return;} // 氏名なしの新規はスキップ（決済のみの行）
       p=newParticipant({name:rec.name,kana:rec.kana,company:rec.company,email:rec.email,groupId:rec.no,amount:e.fee||0,source:'sheet'});
-      p.receipt.name=rec.company||rec.name;p.receipt.amount=p.amount;e.participants.push(p);nw++;
+      p.receipt.name=rec.company||rec.name;e.participants.push(p);nw++;
     }else{
       const setF=(f,v)=>{if(v&&!p.edited.includes(f))p[f]=v;};
       setF('name',rec.name);setF('kana',rec.kana);setF('company',rec.company);setF('email',rec.email);
@@ -575,6 +575,7 @@ function applyPayCsv(){
     if(pst){p.payStatus=pst;if(pst==='paid'&&!p.payMethod)p.payMethod='オンライン';pay++;}
     if(rec.order)p.orderId=rec.order;
     if(rec.amount>0){p.paidAmount=rec.amount;if(!p.edited.includes('amount'))p.amount=rec.amount;}
+    if(!(p.receipt.amount>0))p.receipt.amount=p.amount; // 領収書金額は最終確定金額（決済額/参加費）から設定。作成時fee=0でも0で固定しない
     const d=parseSheetDate(rec.date,e);
     if(d)p.paidAt=d; // 領収書の日付＝注文確定日
     else if(pst==='paid'&&!p.paidAt)p.paidAt=new Date().toISOString();
@@ -1612,9 +1613,11 @@ async function sendReceipt(eid,pid){
   else alert('送信失敗：'+(r.error||r.status));
 }
 /* 一括発行の対象抽出: 「変更あり（再発行待ち）」は常に対象。オプションで未送信・送信済み・領収書「不要」を含める */
-function bulkReceiptTargets(e,incUnsent,incNoNeed,incSent){
+function bulkReceiptTargets(e,incUnsent,incNoNeed,incSent,incUnpaid){
   // キャンセル済みでも支払済みなら発行対象（receiptTargets参照）
   return receiptTargets(e).filter(p=>(p.status!=='cancel'||p.payStatus==='paid')&&p.email&&(p.receipt.amount??p.amount)>0)
+    // 既定は支払済みのみ（未払い・当日予定はincUnpaidで追加）。ただし修正済み（再発行待ち）は支払状況によらず常に対象
+    .filter(p=>incUnpaid||p.payStatus==='paid'||(p.receipt.sentAt&&p.receipt.dirty))
     .filter(p=>incNoNeed||p.receipt.need!=='不要')
     // 対象: 修正あり（再発行待ち） / 未送信（incUnsent） / 送信済みの再送（incSent）
     .filter(p=>(p.receipt.sentAt&&p.receipt.dirty)||(incUnsent&&!p.receipt.sentAt)||(incSent&&p.receipt.sentAt));
@@ -1622,22 +1625,21 @@ function bulkReceiptTargets(e,incUnsent,incNoNeed,incSent){
 function openBulkReceipts(eid){
   const e=getEvent(eid);
   modal('領収書の一括発行・送信',
-    '<div class="hint" style="margin-bottom:12px">発行後に宛名・金額・但書が<b>修正された方（再発行待ち）は常に対象</b>です。以下のオプションで対象を追加できます。</div>'
+    '<div class="hint" style="margin-bottom:12px">既定では<b>「支払済・領収書必要・未送信」の方</b>が対象です（発行後に宛名・金額・但書が<b>修正された方＝再発行待ちは常に対象</b>）。以下のオプションで対象を広げられます。</div>'
     +'<label class="fld" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="bk_unsent" checked style="width:auto"><span style="margin:0">未送信の方を含める</span></label>'
     +'<label class="fld" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="bk_sent" style="width:auto"><span style="margin:0">送信済みの方にも再送する<span class="hint">（同じ番号で再送。内容修正済みの方は自動で再発行番号になります）</span></span></label>'
+    +'<label class="fld" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="bk_unpaid" style="width:auto"><span style="margin:0">未払い・当日予定の方にも送る<span class="hint">（既定は支払済みのみ）</span></span></label>'
     +'<label class="fld" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="bk_noneed" style="width:auto"><span style="margin:0">領収書「不要」の方にも送る</span></label>'
     +'<div class="divider"></div><div id="bk_count" style="font-size:13px;font-weight:700"></div>',
     [{label:'キャンセル',cls:'btn',on:'closeModal()'},{label:'発行・送信する',cls:'btn primary',on:"startBulkReceipts('"+eid+"')"}],460);
-  const upd=()=>{const t=bulkReceiptTargets(e,chk('bk_unsent'),chk('bk_noneed'),chk('bk_sent'));const re=t.filter(p=>p.receipt.sentAt&&p.receipt.dirty).length,resend=t.filter(p=>p.receipt.sentAt&&!p.receipt.dirty).length;
+  const upd=()=>{const t=bulkReceiptTargets(e,chk('bk_unsent'),chk('bk_noneed'),chk('bk_sent'),chk('bk_unpaid'));const re=t.filter(p=>p.receipt.sentAt&&p.receipt.dirty).length,resend=t.filter(p=>p.receipt.sentAt&&!p.receipt.dirty).length;
     document.getElementById('bk_count').textContent='送信対象: '+t.length+'名（再発行 '+re+'名 / 送信済みの再送 '+resend+'名 / 新規送信 '+(t.length-re-resend)+'名）';};
-  document.getElementById('bk_unsent').addEventListener('change',upd);
-  document.getElementById('bk_sent').addEventListener('change',upd);
-  document.getElementById('bk_noneed').addEventListener('change',upd);
+  ['bk_unsent','bk_sent','bk_unpaid','bk_noneed'].forEach(id=>document.getElementById(id).addEventListener('change',upd));
   upd();
 }
 async function startBulkReceipts(eid){
   const e=getEvent(eid);
-  const targets=bulkReceiptTargets(e,chk('bk_unsent'),chk('bk_noneed'),chk('bk_sent'));
+  const targets=bulkReceiptTargets(e,chk('bk_unsent'),chk('bk_noneed'),chk('bk_sent'),chk('bk_unpaid'));
   closeModal();
   if(!targets.length){alert('送信対象がありません。');return;}
   await bulkSendReceipts(e,targets);
