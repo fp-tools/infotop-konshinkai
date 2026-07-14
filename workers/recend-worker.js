@@ -562,6 +562,27 @@ export default {
       return jres({ ok: true });
     }
 
+    // --- 領収書の全版一覧（管理アプリ用・要Bearer）: rootNo の系譜を過去版(isCurrent=false)も含めて返す ---
+    // /claim/list は現在版のみ返すため、管理側の「全版ダウンロード」用にこちらで過去版も取得できるようにする。
+    if (request.method === 'POST' && path === '/receipts/versions') {
+      if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);
+      let body;
+      try { body = await request.json(); } catch (e) { return jres({ ok: false, error: 'invalid json' }, 400); }
+      const rootNo = normNo(body.rootNo || '');
+      if (!rootNo) return jres({ ok: false, error: 'rootNo がありません' }, 400);
+      const rows = await kvListAll(env.MAILLOG, 'rcpt:');
+      const items = rows.map((r) => r.value)
+        .filter((rec) => rec && normNo(rec.rootNo || rec.no) === rootNo)
+        .sort((a, b) => (a.revision || 0) - (b.revision || 0))
+        .map((rec) => ({
+          no: rec.no, revision: rec.revision || 0, isReissue: !!rec.isReissue, isCurrent: !!rec.isCurrent,
+          addressee: rec.addressee || '', amount: Number(rec.amount) || 0, note: rec.note || '',
+          paymentDate: rec.paymentDate || '', issuedAt: rec.issuedAt || '', eventName: rec.eventName || '',
+          html: renderReceipt(rec),
+        }));
+      return jres({ ok: true, items });
+    }
+
     // --- 領収書レコードの保存（管理アプリが発行・送信時に呼ぶ） ---
     if (request.method === 'POST' && path === '/receipts') {
       if (!env.MAILLOG) return jres({ ok: false, error: 'KV binding "MAILLOG" が未設定です' }, 500);

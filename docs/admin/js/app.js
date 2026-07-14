@@ -1226,6 +1226,7 @@ function rcptActionCell(e,p){
   return '<div style="display:flex;flex-direction:column;gap:4px;align-items:stretch;min-width:104px">'
     +'<button class="btn sm" onclick="previewReceipt(\''+e.id+'\',\''+p.id+'\')">プレビュー</button>'
     +'<button class="btn sm primary" onclick="sendReceipt(\''+e.id+'\',\''+p.id+'\')">発行・送信</button>'
+    +(p.receipt.no?'<button class="btn sm" title="再発行前・途中を含むこの領収書の全版をZIPでダウンロード" onclick="downloadAllVersions(\''+e.id+'\',\''+p.id+'\')">全版DL</button>':'')
     +(p.receipt.no?'<button class="btn sm danger" title="誤発行に備えて送信履歴をリセット（次回は新番号で発行）" onclick="resetReceipt(\''+e.id+'\',\''+p.id+'\')">リセット</button>':'')
     +'</div>';
 }
@@ -1330,6 +1331,43 @@ async function receiptPngBase64(e,p){
     return canvas.toDataURL('image/png').split(',')[1];
   }catch(err){return null;}
   finally{holder.remove();}
+}
+/* Worker等から受け取った券面HTML文字列を実DOMに描画してPNG(base64)化する（全版DL用） */
+async function htmlToPngBase64(html){
+  const holder=document.createElement('div');
+  holder.style.cssText='position:fixed;left:-9999px;top:0;background:#fff;z-index:-1';
+  holder.innerHTML=html;
+  document.body.appendChild(holder);
+  try{const canvas=await html2canvas(holder.firstElementChild||holder,{scale:2,backgroundColor:'#ffffff'});return canvas.toDataURL('image/png').split(',')[1];}
+  catch(err){return null;}
+  finally{holder.remove();}
+}
+/* この領収書の全版（再発行前・途中・最新）をWorkerから取得しPNG化してZIP保存。
+   過去版はWorker /receipts/versions（要Bearer）からのみ取得できる（/claim/listは現在版のみ）。 */
+async function downloadAllVersions(eid,pid){
+  const e=getEvent(eid),p=e.participants.find(x=>x.id===pid);
+  if(!p||!p.receipt.no){alert('この方はまだ領収書が発行されていません。');return;}
+  if(!workerBase()){alert('受取人ページ（Worker）のURLが未設定のため取得できません。');return;}
+  if(typeof JSZip==='undefined'||typeof html2canvas==='undefined'){alert('ZIP生成ライブラリが読み込めません。ページを再読み込みしてください。');return;}
+  const r=await recendSend({rootNo:p.receipt.no},'/receipts/versions');
+  if(!r.ok||!r.data||!Array.isArray(r.data.items)){
+    if(r.status===404||r.status===405)alert('全版取得API（/receipts/versions）が見つかりません。\nワーカー（recend-worker.js）の更新（wrangler deploy）が必要です。');
+    else alert('全版の取得に失敗しました。\n'+((r.data&&r.data.error)||r.error||('status '+r.status)));
+    return;
+  }
+  const items=r.data.items;
+  if(!items.length){alert('この領収書の版データが見つかりませんでした（受取人ページ用の保存が未実行の可能性があります）。');return;}
+  const zip=new JSZip();let n=0;
+  for(const it of items){
+    const b64=await htmlToPngBase64(it.html);
+    if(!b64)continue;
+    const suf=(it.isReissue?'（再）':'')+(it.isCurrent?'_最新':'_旧');
+    zip.file(String(it.no||('rev'+(it.revision||0))).replace(/[\\/:*?"<>|]/g,'')+suf+'.png',b64,{base64:true});n++;
+  }
+  if(!n){alert('版のPNG生成に失敗しました。');return;}
+  const blob=await zip.generateAsync({type:'blob'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(p.receipt.no||'領収書')+'_全版('+n+')_'+todayISO()+'.zip';a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),10000);
 }
 function rcpt(eid,pid,k,v){const p=getEvent(eid).participants.find(x=>x.id===pid);if(k==='amount')v=Number(v)||0;
   const before=p.receipt[k];if(before===v)return;
