@@ -1237,7 +1237,9 @@ function receiptMainRow(e,p){
   const orderCell='<div><b>'+(p.groupId?esc(p.groupId):'<span class="tag warn" title="申込番号がないと受取人ページで再取得できません">無</span>')+'</b></div>'
     +'<div class="hint" style="margin-top:4px">'+(1+comps.length)+'名</div>'
     +(comps.length?'<button class="btn sm" style="margin-top:6px;font-weight:700" onclick="toggleRcptAccordion(\''+p.id+'\')" title="お連れ様の領収書を表示">'+(open?'▼':'▶')+' '+comps.length+'名</button>':'');
-  return '<tr'+(p.status==='cancel'?' style="background:#fdf6f5"':'')+'>'
+  // 検索用文字列（申込者＋お連れ様の 氏名・法人名・メール・申込番号）
+  const rsearch=[p.name,p.company,p.email,p.groupId,...comps.flatMap(c=>[c.name,c.company,c.email])].filter(Boolean).join(' ').toLowerCase();
+  return '<tr data-rmain="'+p.id+'" data-rsearch="'+esc(rsearch)+'"'+(p.status==='cancel'?' style="background:#fdf6f5"':'')+'>'
     +'<td style="text-align:center"><input type="checkbox" class="rcpt-sel" data-pid="'+p.id+'"></td>'
     +'<td>'+(p.status==='cancel'?'<div style="margin-bottom:4px"><span class="tag danger">キャンセル'+(p.payStatus==='paid'?'（支払済）':'')+'</span></div>':'')+orderCell+'</td>'
     +'<td><b>'+esc(p.company||p.name||'(無題)')+'</b>'+(p.company&&p.name?'<div class="hint">'+esc(p.name)+'</div>':'')+'</td>'
@@ -1258,7 +1260,7 @@ function receiptCompRow(e,main,c){
     content='<div class="hint">申込者の領収書に合算<br>（別々に発行するには「別会計にする」）</div>';status='<span class="hint">-</span>';
     action='<button class="btn sm primary" onclick="receiptSplitCompanion(\''+e.id+'\',\''+main.id+'\',\''+c.id+'\')">別会計にする</button>';
   }
-  return '<tr style="background:#f7f9fc">'
+  return '<tr data-rparent="'+main.id+'" style="background:#f7f9fc">'
     +'<td style="text-align:center">'+(split?'<input type="checkbox" class="rcpt-sel" data-pid="'+c.id+'">':'')+'</td>'
     +'<td style="padding-left:16px"><span class="hint">└ お連れ様</span></td>'
     +'<td><span style="color:var(--muted)">└ </span><b>'+esc(c.company||c.name||'')+'</b>'+(c.company&&c.name?'<div class="hint">'+esc(c.name)+'</div>':'')+'</td>'
@@ -1271,6 +1273,8 @@ function receiptCompRow(e,main,c){
 function tabReceipts(e){
   // 領収書タブを開いたら一度だけ、受取人ページの再発行を自動同期（静かに）→ 更新があれば再描画
   if(!_rcptSyncDone[e.id]&&SESS&&workerBase()){_rcptSyncDone[e.id]=true;setTimeout(()=>syncReceiptVersions(e.id,{silent:true}),60);}
+  // 再描画後も検索の絞り込み状態を維持（セグメント絞り込みで再描画されたとき用）
+  if(rcptSearch)setTimeout(rcptSearchApply,0);
   const ps=receiptTargets(e);
   const issued=ps.filter(p=>p.receipt.no).length;
   const mains=ps.filter(p=>isMain(p));
@@ -1287,22 +1291,32 @@ function tabReceipts(e){
     +'<button class="btn sm primary" onclick="openBulkReceipts(\''+e.id+'\')">一括発行・送信</button></div></div>'
     +(rcptEditMode?'<div class="banner" style="margin-bottom:10px">編集モード：宛名・金額・但し書きを変更し、上部の<b>「保存」</b>で一括反映します（「取消」で破棄）。</div>':'')
     +'<div class="hint" style="margin-bottom:10px">領収書はPNG画像を<b>メールに添付</b>して送信します。番号は発行順の連番（IS-E00001）で、発行後に宛名・金額・但書を変更すると次回送信時に IS-E00001-1 の形式で「（再）」として再発行されます。<b>お連れ様は申込番号の「▼お連れ様」から表示</b>し、「別会計にする」で申込者の合算額から切り出して個別に発行できます（代表者が人数分を決済済みならお連れ様も支払済に）。</div>';
-  // ---- 領収書要否フィルタ（申込者＋単独お連れ様を対象に件数集計） ----
+  // ---- 絞り込み（申込者＋単独お連れ様を対象に件数集計） ----
   const tops=[...mains,...orphans];
-  const cnt={必要:0,不要:0,未回答:0};tops.forEach(p=>cnt[rcptNeedOf(p)]++);
-  const fbtn=(v,label,n)=>'<button class="btn sm'+(rcptNeedFilter===v?' primary':'')+'" onclick="setRcptNeedFilter(\''+v+'\')">'+label+(n!=null?'（'+n+'）':'')+'</button>';
-  h+='<div class="flex" style="gap:6px;margin-bottom:10px;align-items:center;flex-wrap:wrap"><span class="hint">領収書の要否で絞り込み：</span>'
-    +fbtn('all','すべて',tops.length)+fbtn('必要','必要',cnt.必要)+fbtn('不要','不要',cnt.不要)+(cnt.未回答?fbtn('未回答','未回答',cnt.未回答):'')+'</div>';
-  const matchNeed=p=>rcptNeedFilter==='all'||rcptNeedOf(p)===rcptNeedFilter;
-  h+='<div style="overflow:auto"><table><thead><tr><th><input type="checkbox" onchange="document.querySelectorAll(\'.rcpt-sel\').forEach(c=>c.checked=this.checked)" title="全選択"></th><th>申込番号</th><th>申込人名</th><th>宛名・金額・但し書</th><th>送信先</th><th>支払</th><th>領収書・状態</th><th></th></tr></thead><tbody>';
+  const cntNeed={必要:0,不要:0,未回答:0};tops.forEach(p=>cntNeed[rcptNeedOf(p)]++);
+  const cntIssued={発行済:0,未発行:0};tops.forEach(p=>cntIssued[rcptIssuedOf(p)]++);
+  const cntMod={修正あり:0,修正なし:0};tops.forEach(p=>cntMod[rcptModifiedOf(p)]++);
+  const seg=(cur,setter,v,label,n)=>'<button class="btn sm'+(cur===v?' primary':'')+'" onclick="'+setter+'(\''+v+'\')">'+label+(n!=null?'（'+n+'）':'')+'</button>';
+  const row=(labelTxt,html)=>'<div class="flex" style="gap:6px;margin-bottom:6px;align-items:center;flex-wrap:wrap"><span class="hint" style="min-width:72px">'+labelTxt+'</span>'+html+'</div>';
+  h+='<div class="card" style="padding:10px;margin-bottom:10px;background:var(--panel,#fafbfc)">'
+    +row('要否',seg(rcptNeedFilter,'setRcptNeedFilter','all','すべて',tops.length)+seg(rcptNeedFilter,'setRcptNeedFilter','必要','必要',cntNeed.必要)+seg(rcptNeedFilter,'setRcptNeedFilter','不要','不要',cntNeed.不要)+(cntNeed.未回答?seg(rcptNeedFilter,'setRcptNeedFilter','未回答','未回答',cntNeed.未回答):''))
+    +row('発行状態',seg(rcptIssuedFilter,'setRcptIssuedFilter','all','すべて',tops.length)+seg(rcptIssuedFilter,'setRcptIssuedFilter','発行済','発行済',cntIssued.発行済)+seg(rcptIssuedFilter,'setRcptIssuedFilter','未発行','未発行',cntIssued.未発行))
+    +row('修正有無',seg(rcptModFilter,'setRcptModFilter','all','すべて',tops.length)+seg(rcptModFilter,'setRcptModFilter','修正あり','修正あり（再発行）',cntMod.修正あり)+seg(rcptModFilter,'setRcptModFilter','修正なし','修正なし',cntMod.修正なし))
+    +row('検索','<input id="rcptSearchBox" value="'+esc(rcptSearch)+'" placeholder="氏名・法人名・メール・申込番号で検索" oninput="rcptSearchApply()" style="width:280px;max-width:100%">'+(rcptSearch?'<button class="btn sm" onclick="rcptSearch=\'\';render()">クリア</button>':''))
+    +'</div>';
+  const matchFilters=p=>(rcptNeedFilter==='all'||rcptNeedOf(p)===rcptNeedFilter)
+    &&(rcptIssuedFilter==='all'||rcptIssuedOf(p)===rcptIssuedFilter)
+    &&(rcptModFilter==='all'||rcptModifiedOf(p)===rcptModFilter);
+  h+='<div style="overflow:auto"><table id="rcptTable"><thead><tr><th><input type="checkbox" onchange="document.querySelectorAll(\'.rcpt-sel\').forEach(c=>c.checked=this.checked)" title="全選択"></th><th>申込番号</th><th>申込人名</th><th>宛名・金額・但し書</th><th>送信先</th><th>支払</th><th>領収書・状態</th><th></th></tr></thead><tbody>';
   let shown=0;
-  mains.filter(matchNeed).forEach(m=>{
+  mains.filter(matchFilters).forEach(m=>{
     shown++;h+=receiptMainRow(e,m);
     const comps=companionsOf(e,m.id);
     if(comps.length&&(rcptOpen[m.id]||comps.some(c=>c.receipt.split)))comps.forEach(c=>{h+=receiptCompRow(e,m,c);});
   });
-  orphans.filter(matchNeed).forEach(p=>{shown++;h+=receiptMainRow(e,p);});
-  if(!shown)h+='<tr><td colspan="8" class="hint" style="text-align:center;padding:18px">該当する方がいません（フィルタ「'+esc(rcptNeedFilter==='all'?'すべて':rcptNeedFilter)+'」）。</td></tr>';
+  orphans.filter(matchFilters).forEach(p=>{shown++;h+=receiptMainRow(e,p);});
+  if(!shown)h+='<tr><td colspan="8" class="hint" style="text-align:center;padding:18px">絞り込み条件に該当する方がいません。</td></tr>';
+  h+='<tr id="rcptNoSearchRow" style="display:none"><td colspan="8" class="hint" style="text-align:center;padding:18px">検索語に一致する方がいません。</td></tr>';
   return h+'</tbody></table></div></div>';
 }
 /* 発行済み領収書をPNG化してZIPで一括ダウンロード */
@@ -1382,8 +1396,32 @@ function rcpt(eid,pid,k,v){const p=getEvent(eid).participants.find(x=>x.id===pid
 /* ---- 領収書 一括編集モード（上部メニューの「編集」で切替） ---- */
 let rcptEditMode=false; // trueの間だけ宛名・金額・但書が入力欄になる（端末内メモリ）
 let rcptNeedFilter='all'; // 領収書要否の絞り込み: all/必要/不要/未回答（端末内メモリ）
+let rcptIssuedFilter='all'; // 発行状態: all/発行済/未発行
+let rcptModFilter='all'; // 修正有無: all/修正あり/修正なし
+let rcptSearch=''; // 氏名・法人名・メール・申込番号の検索語（小文字）
 function rcptNeedOf(p){return p.receipt.need==='不要'?'不要':(p.receipt.need==='必要'?'必要':'未回答');}
+function rcptIssuedOf(p){return p.receipt.no?'発行済':'未発行';}
+function rcptModifiedOf(p){return ((p.receipt.revision||0)>0||p.receipt.reissue||p.receipt.dirty)?'修正あり':'修正なし';}
 function setRcptNeedFilter(v){rcptNeedFilter=v;render();}
+function setRcptIssuedFilter(v){rcptIssuedFilter=v;render();}
+function setRcptModFilter(v){rcptModFilter=v;render();}
+/* 検索は再描画せずDOMの表示/非表示だけ切り替える（入力フォーカスを保つ）。
+   セグメント絞り込みで再描画された後も rcptSearch を再適用して状態を維持する。 */
+function rcptSearchApply(){
+  const el=document.getElementById('rcptSearchBox');
+  const q=(el?el.value:rcptSearch).trim().toLowerCase();rcptSearch=q;
+  const tbl=document.getElementById('rcptTable');if(!tbl)return;
+  const vis={};let anyVisible=false;
+  tbl.querySelectorAll('tr[data-rmain]').forEach(tr=>{
+    const show=!q||(tr.getAttribute('data-rsearch')||'').includes(q);
+    tr.style.display=show?'':'none';vis[tr.getAttribute('data-rmain')]=show;if(show)anyVisible=true;
+  });
+  tbl.querySelectorAll('tr[data-rparent]').forEach(tr=>{
+    const show=vis[tr.getAttribute('data-rparent')]!==false; // 親申込者が表示中のときだけお連れ様も表示
+    tr.style.display=show?'':'none';
+  });
+  const nr=document.getElementById('rcptNoSearchRow');if(nr)nr.style.display=(q&&!anyVisible)?'':'none';
+}
 function rcptEnterEdit(){rcptEditMode=true;render();}
 function rcptCancelEdit(){rcptEditMode=false;render();} // DOMの変更は破棄（storeは未変更）
 /* 表示中の全入力欄をまとめてstoreへ反映（rcptが履歴・再発行フラグ・保存まで処理） */
