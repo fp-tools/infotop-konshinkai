@@ -1268,6 +1268,8 @@ function receiptCompRow(e,main,c){
     +'<td>'+action+'</td></tr>';
 }
 function tabReceipts(e){
+  // 領収書タブを開いたら一度だけ、受取人ページの再発行を自動同期（静かに）→ 更新があれば再描画
+  if(!_rcptSyncDone[e.id]&&SESS&&workerBase()){_rcptSyncDone[e.id]=true;setTimeout(()=>syncReceiptVersions(e.id,{silent:true}),60);}
   const ps=receiptTargets(e);
   const issued=ps.filter(p=>p.receipt.no).length;
   const mains=ps.filter(p=>isMain(p));
@@ -1278,6 +1280,7 @@ function tabReceipts(e){
   let h='<div class="card pad"><div class="between" style="margin-bottom:6px"><b>'+ic('receipt',16)+' 領収書発行</b><div class="flex">'
     +editBtns
     +'<button class="btn sm" onclick="autoGroupReceipts(\''+e.id+'\')">申込グループで自動まとめ</button>'
+    +'<button class="btn sm" onclick="syncReceiptVersions(\''+e.id+'\')" title="受取人ページで本人が再発行した最新版を取り込み、プレビュー・DLに反映します">受取人の再発行を同期</button>'
     +'<button class="btn sm" onclick="downloadReceiptZip(\''+e.id+'\')">'+ic('download',14)+' 発行済みをZIPで一括DL'+(issued?'（'+issued+'件）':'')+'</button>'
     +'<button class="btn sm" onclick="sendCheckedReceipts(\''+e.id+'\')">チェックした人に送信</button>'
     +'<button class="btn sm primary" onclick="openBulkReceipts(\''+e.id+'\')">一括発行・送信</button></div></div>'
@@ -1426,6 +1429,14 @@ function receiptDisplayNo(p){const r=p.receipt;return r.no?(r.no+(r.revision?'-'
 function receiptPendingReissue(p){return !!(p.receipt.no&&p.receipt.dirty);}
 function receiptEffDisplayNo(p){const r=p.receipt;if(!r.no)return '';const rev=(r.revision||0)+(receiptPendingReissue(p)?1:0);return r.no+(rev?'-'+rev:'');}
 function receiptEffReissue(p){return !!p.receipt.reissue||receiptPendingReissue(p);}
+/* 券面番号 no が root（例 "R-00001" / "IS-E00001"。root自体もハイフンを含むため単純分割は不可）
+   の版かどうかを、既知の root と突き合わせて判定する。版なら版数(0以上)、無関係なら -1 を返す。
+   例 rcptVerOf("R-00001","R-00001")=0 / rcptVerOf("R-00001-2","R-00001")=2 */
+function rcptVerOf(no,root){no=String(no||'');root=String(root||'');
+  if(!root)return -1;
+  if(no===root)return 0;
+  if(no.startsWith(root+'-')){const n=Number(no.slice(root.length+1));return Number.isInteger(n)&&n>=0?n:-1;}
+  return -1;}
 /* 誤発行に備えた送信履歴リセット: 現在の領収書番号・発行/送信状態・修正履歴をクリアする。
    宛名・金額・但し書きは残し、次回の「発行・送信」で新しい領収書番号（全体連番の次の番号）を採番する。 */
 function resetReceipt(eid,pid){
@@ -1467,6 +1478,45 @@ async function pushReceiptRecords(e,ps){
   const items=ps.map(p=>receiptRecord(e,p));
   const r=await recendSend({items},'/receipts');
   if(!r.ok)alert('注意: 領収書データの保存（受取人ページ用）に失敗しました。メール自体は送信済みです。\n'+(r.error||r.status||'')+(r.data&&r.data.error?'\n'+r.data.error:''));
+}
+/* ---- 受取人ページ（claim）と同期: 受取人が自分で再発行した最新版を管理側へ反映 ----
+   Worker /claim/list はメール＋申込番号で「現在版(isCurrent)」を返す。管理ローカルの
+   revision より新しければ、番号・（再）・宛名・但書・金額を最新版に合わせる（プレビュー/DLが
+   再発行版になる）。管理側に未送信の変更(dirty)がある行は、編集を失わないよう上書きしない。 */
+let _rcptSyncDone={}; // eventId -> 済み（タブ表示中に一度だけ自動同期）
+async function syncReceiptVersions(eid,opt){opt=opt||{};const silent=!!opt.silent;
+  const e=getEvent(eid);if(!e)return;
+  if(!workerBase()){if(!silent)alert('受取人ページ（Worker）のURLが未設定のため同期できません。');return;}
+  const ps=(e.participants||[]).filter(p=>p.receipt&&p.receipt.no&&p.email&&p.groupId);
+  if(!ps.length){if(!silent)alert('同期対象（発行済み＋メール＋申込番号あり）の領収書がありません。');return;}
+  // (メール,申込番号)でユニーク化して呼び出し回数を削減
+  const pairs=[...new Map(ps.map(p=>[normEmail(p.email)+'|'+String(p.groupId).trim(),{email:p.email,orderNo:p.groupId}])).values()];
+  let updated=0,checked=0,failed=0,skippedDirty=0;
+  for(const pr of pairs){
+    const r=await recendSend({email:pr.email,orderNo:pr.orderNo},'/claim/list');
+    if(!r.ok||!r.data||!Array.isArray(r.data.items)){failed++;continue;}
+    const items=r.data.items;
+    ps.filter(p=>normEmail(p.email)===normEmail(pr.email)&&String(p.groupId).trim()===String(pr.orderNo).trim()).forEach(p=>{
+      checked++;
+      // このルート番号(p.receipt.no)に属する版のうち最大版数のもの（/claim/listは現在版のみ返す）
+      let it=null,rev=-1;items.forEach(x=>{const rv=rcptVerOf(x.no,p.receipt.no);if(rv>rev){rev=rv;it=x;}});
+      if(!it)return;
+      if(rev<=(p.receipt.revision||0)&&(!!p.receipt.reissue===!!it.isReissue))return; // 既に最新
+      if(p.receipt.dirty){skippedDirty++;return;} // 管理側に未送信の変更あり → 上書きしない
+      p.receipt.revision=rev;p.receipt.reissue=!!it.isReissue;
+      p.receipt.noName=String(it.addressee||'')==='';p.receipt.name=it.addressee||'';
+      p.receipt.noNote=String(it.note||'')==='';p.receipt.note=it.note||'';
+      if(Number(it.amount)>0)p.receipt.amount=Number(it.amount);
+      p.receipt.dirty=false;p.receipt.lastIssued=receiptContentSnapshot(p);
+      if(!p.receipt.sentAt)p.receipt.sentAt=it.issuedAt||new Date().toISOString();
+      updated++;
+    });
+  }
+  if(updated)save();
+  if(updated)render();
+  if(!silent)alert('受取人ページと同期しました。\n更新 '+updated+'件 / 確認 '+checked+'件'
+    +(skippedDirty?'\n※管理側に未送信の変更がある '+skippedDirty+'件は上書きしていません（先に発行・送信してください）':'')
+    +(failed?'\n取得失敗 '+failed+'件（通信状況をご確認ください）':''));
 }
 /* 発行/再発行で件名・本文テンプレートを出し分ける（p.receipt.reissue=再発行送信時のみtrue） */
 function receiptMailSubjTpl(p){const s=store.settings;return p.receipt.reissue?(s.receiptReSubj||RC_RE_SUBJ_DEFAULT):(s.receiptSubj||RC_SUBJ_DEFAULT);}
