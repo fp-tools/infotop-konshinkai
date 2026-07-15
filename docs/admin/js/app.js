@@ -1313,6 +1313,7 @@ function tabReceipts(e){
     +'<button class="btn sm" onclick="autoGroupReceipts(\''+e.id+'\')">申込グループで自動まとめ</button>'
     +'<button class="btn sm" onclick="syncReceiptVersions(\''+e.id+'\')" title="受取人ページで本人が再発行した最新版を取り込み、プレビュー・DLに反映します">受取人の再発行を同期</button>'
     +'<button class="btn sm" onclick="downloadReceiptZip(\''+e.id+'\')">'+ic('download',14)+' 発行済みをZIPで一括DL'+(issued?'（'+issued+'件）':'')+'</button>'
+    +((store.settings.gasReceiptUrl||'')?'<button class="btn sm" onclick="writeAllReceiptNosToSheet(\''+e.id+'\')" title="発行済みの申込番号→領収書Noをスプレッドシート(X列)へまとめて書込">シートへ領収書Noを書込（全件）</button>':'')
     +'<button class="btn sm" onclick="sendCheckedReceipts(\''+e.id+'\')">チェックした人に送信</button>'
     +'<button class="btn sm primary" onclick="openBulkReceipts(\''+e.id+'\')">一括発行・送信</button></div></div>'
     +(rcptEditMode?'<div class="banner" style="margin-bottom:10px">編集モード：宛名・金額・但し書きを変更し、上部の<b>「保存」</b>で一括反映します（「取消」で破棄）。</div>':'')
@@ -1581,6 +1582,26 @@ async function pushReceiptRecords(e,ps){
   const r=await recendSend({items},'/receipts');
   if(!r.ok)alert('注意: 領収書データの保存（受取人ページ用）に失敗しました。メール自体は送信済みです。\n'+(r.error||r.status||'')+(r.data&&r.data.error?'\n'+r.data.error:''));
 }
+/* ---- スプレッドシートへ「申込番号→最新の領収書No」を書込（GAS Webアプリ） ----
+   GASのdoPostはCORSヘッダを返せないため、no-cors のfire-and-forgetで送る（結果は読めないが書込は実行される）。 */
+function pushReceiptNosToSheet(e,ps){
+  const url=(store.settings.gasReceiptUrl||'').trim();if(!url)return 0;
+  const items=(ps||[]).filter(p=>p&&p.groupId&&p.receipt&&p.receipt.no)
+    .map(p=>({orderNo:String(p.groupId).trim(),receiptNo:receiptDisplayNo(p),addressee:rcptName(p),amount:Number(p.receipt.amount??p.amount)||0}));
+  if(!items.length)return 0;
+  const payload={secret:store.settings.gasReceiptSecret||'',event:e.name||'',items};
+  try{fetch(url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});}catch(err){}
+  return items.length;
+}
+/* 発行済み領収書の「申込番号→領収書No」をまとめてシートへ書き込む（既存分の一括反映・手動） */
+function writeAllReceiptNosToSheet(eid){
+  const e=getEvent(eid);
+  if(!(store.settings.gasReceiptUrl||'').trim()){alert('設定画面の「スプレッドシートへ領収書No自動書込（GAS）」でWebアプリURLを登録してください。');return;}
+  const ps=(e.participants||[]).filter(p=>p.receipt&&p.receipt.no&&p.groupId);
+  if(!ps.length){alert('書き込む対象がありません（発行済み＝領収書Noあり かつ 申込番号あり の方が対象）。');return;}
+  const n=pushReceiptNosToSheet(e,ps);
+  alert(n+'件の「申込番号→領収書No」をスプレッドシートへ送信しました。\n※反映結果はスプレッドシート側でご確認ください（GASがX列に書き込みます／no-corsのため戻り値は取得しません）。');
+}
 /* ---- 受取人ページ（claim）と同期: 受取人が自分で再発行した最新版を管理側へ反映 ----
    Worker /claim/list はメール＋申込番号で「現在版(isCurrent)」を返す。管理ローカルの
    revision より新しければ、番号・（再）・宛名・但書・金額を最新版に合わせる（プレビュー/DLが
@@ -1796,6 +1817,7 @@ async function sendReceipt(eid,pid){
   const r=await recendSend(payload);p.receipt.issued=true;p.receipt.issuedAt=new Date().toISOString();
   if(r.ok){p.receipt.sentAt=new Date().toISOString();logMail(e,{kind:'領収書'+(p.receipt.reissue?'（再発行）':''),subject:'【領収書】'+e.name+'（'+dispNo+'）',body:'領収書番号:'+dispNo+' / 宛名:'+(rcptName(p)||'（宛名なし）')+' / 金額:'+yen(p.receipt.amount??p.amount)+' / 但し:'+(rcptNote(p)||'（但書なし）')+' / 申込番号:'+(p.groupId||'-')+' / PNG添付',count:1,status:'sent',recipients:[{to:p.email,name:p.name,pid:p.id,mid,ok:true}]});
     await pushReceiptRecords(e,[p]);
+    pushReceiptNosToSheet(e,[p]); // 申込番号→領収書No をスプレッドシートへ書込（GAS設定時のみ）
     if(wasDirty&&prevNo!==dispNo)recendSend({event:e.name,no:prevNo,newNo:dispNo,addressee:rcptName(p),email:p.email,changes:(p.receipt.history||[]).slice(-3)},'/notify/receipt-edit'); // 管理者修正のChatwork通知（内容不変で番号が変わらない場合は通知しない）
     closeModal();render();alert('領収書（'+dispNo+'）をPNG添付で送信しました。');}
   else if(r.fallback){const sub='【領収書】'+e.name,bd=(p.name||rcptName(p))+' 様\n\n領収書を発行いたしました。金額：'+yen(p.receipt.amount??p.amount)+'\n但し：'+rcptNote(p);window.open('mailto:'+encodeURIComponent(p.email)+'?subject='+encodeURIComponent(sub)+'&body='+encodeURIComponent(bd));save();closeModal();render();}
@@ -1879,6 +1901,7 @@ async function bulkSendReceipts(e,targets){
     save(); // ★1通ごとに送信済みフラグ＋履歴を永続化（localStorageにも即保存されるので途中で止まっても残る）
   }
   logEntry.status='sent';logEntry.body='一括発行 '+recs.length+'件（成功'+okCnt+' / 失敗'+ngCnt+'）';save();
+  pushReceiptNosToSheet(e,recs.map(r=>r.p).filter(p=>p.receipt.sentAt)); // 申込番号→領収書No をスプレッドシートへ一括書込（GAS設定時のみ）
   render();alert('領収書の一括送信が完了しました（成功 '+okCnt+'件'+(ngCnt?' / 失敗 '+ngCnt+'件':'')+'）。');
 }
 
@@ -2368,7 +2391,12 @@ function viewSettings(){
    +'<label class="fld"><span>電話番号（任意）</span><input id="st_phone" value="'+esc(s.issuerPhone||'')+'" placeholder="例）03-0000-0000"></label>'
    +'<label class="fld"><span>事業者登録番号（インボイス）</span><input id="st_regnum" value="'+esc(s.issuerRegNum||RECEIPT_REG_DEFAULT)+'"></label>'
    +'<label class="fld"><span>受取人ページURL（claim.html の公開URL）</span><input id="st_claim" value="'+esc(s.claimUrl||'')+'" placeholder="https://fp-tools.github.io/infotop-konshinkai/claim.html"></label>'
-   +'<p class="hint" style="margin:0">設定すると、領収書メールに「再取得・修正ページ」の案内と申込番号が記載されます。受取人はメールアドレス＋申込番号で領収書を再取得でき、発行から2週間以内は<b>宛名のみ</b>自分で修正できます（修正すると（再）付きで再発行。金額・但書の変更は管理画面から）。</p></div>'
+   +'<p class="hint" style="margin:0 0 12px">設定すると、領収書メールに「再取得・修正ページ」の案内と申込番号が記載されます。受取人はメールアドレス＋申込番号で領収書を再取得でき、発行から2週間以内は<b>宛名のみ</b>自分で修正できます（修正すると（再）付きで再発行。金額・但書の変更は管理画面から）。</p>'
+   +'<div class="divider"></div>'
+   +'<b style="font-size:13px">スプレッドシートへ領収書No自動書込（GAS・任意）</b>'
+   +'<label class="fld"><span>GAS WebアプリURL（/exec）</span><input id="st_gasurl" value="'+esc(s.gasReceiptUrl||'')+'" placeholder="https://script.google.com/macros/s/.../exec"></label>'
+   +'<label class="fld"><span>共有シークレット（GAS側の SECRET と一致させる）</span><input id="st_gassecret" value="'+esc(s.gasReceiptSecret||'')+'" placeholder="任意の文字列"></label>'
+   +'<p class="hint" style="margin:0">設定すると、領収書の<b>発行・送信時に「申込番号→最新の領収書No」をスプレッドシートへ自動書込</b>します（GASが申込番号をE列付近で探し、X列に記入）。既存の発行済み分は「領収書発行」タブの<b>「シートへ領収書Noを書込（全件）」</b>でまとめて反映できます。</p></div>'
    +'<div class="card pad"><b>Chatwork通知（全体設定）</b><p class="hint" style="margin:4px 0 14px">APIトークンは全通知で共通です。通知先（ルームID・メンション）は「領収書修正」と「締め報告」で別々に設定できます。</p>'
    +'<label class="fld"><span>Chatwork APIトークン（共通）</span><input id="cw_token" type="password" placeholder="Chatwork「サービス連携」→「APIトークン」で発行"></label>'
    +'<div class="divider"></div>'
@@ -2392,7 +2420,7 @@ function viewSettings(){
    +'<div class="card pad"><b>データ管理</b><p class="hint" style="margin:4px 0 12px">データは全端末共通のサーバ（Worker KV）に保存されています。バックアップにご利用ください。</p><div class="flex"><button class="btn" onclick="exportAll()">'+ic('download',14)+' 全データをバックアップ(JSON)</button><label class="btn" style="margin:0">'+ic('upload',14)+' 復元<input type="file" accept=".json" style="display:none" onchange="importAll(this)"></label><button class="btn danger" onclick="wipe()">全データ削除</button></div></div>'
    +'<div style="text-align:right"><button class="btn primary" onclick="saveSettings()">設定を保存</button></div></div>';
 }
-function saveSettings(){const s=store.settings;s.recendUrl=val('st_url').trim();s.recendToken=val('st_token').trim();s.receiptIssuer=val('st_issuer');s.companyAddr=val('st_addr');s.issuerPhone=val('st_phone').trim();s.issuerRegNum=val('st_regnum').trim()||RECEIPT_REG_DEFAULT;s.claimUrl=val('st_claim').trim();s.formApiUrl=val('st_form').trim();s.formApiToken=val('st_formtok').trim();s.payPageUrl=val('st_paypage').trim();s.payItemId=val('st_payitem').trim();s.payReceiveUrl=val('st_payrecv').trim();s.payReceiveToken=val('st_payrecvtok').trim();s.autoReplyOn=chk('st_arOn');s.autoReplySubj=val('st_arSubj')||AR_SUBJ_DEFAULT;s.autoReplyBody=document.getElementById('st_arBody')?document.getElementById('st_arBody').value:s.autoReplyBody;save();alert('保存しました');}
+function saveSettings(){const s=store.settings;s.recendUrl=val('st_url').trim();s.recendToken=val('st_token').trim();s.gasReceiptUrl=val('st_gasurl').trim();s.gasReceiptSecret=val('st_gassecret').trim();s.receiptIssuer=val('st_issuer');s.companyAddr=val('st_addr');s.issuerPhone=val('st_phone').trim();s.issuerRegNum=val('st_regnum').trim()||RECEIPT_REG_DEFAULT;s.claimUrl=val('st_claim').trim();s.formApiUrl=val('st_form').trim();s.formApiToken=val('st_formtok').trim();s.payPageUrl=val('st_paypage').trim();s.payItemId=val('st_payitem').trim();s.payReceiveUrl=val('st_payrecv').trim();s.payReceiveToken=val('st_payrecvtok').trim();s.autoReplyOn=chk('st_arOn');s.autoReplySubj=val('st_arSubj')||AR_SUBJ_DEFAULT;s.autoReplyBody=document.getElementById('st_arBody')?document.getElementById('st_arBody').value:s.autoReplyBody;save();alert('保存しました');}
 /* Chatwork設定はWorker(KV)に保存（通知はWorker側から送るため） */
 async function loadChatworkCfg(){
   const el=()=>document.getElementById('cw_status');
