@@ -1819,15 +1819,24 @@ async function sendCheckedReceipts(eid){
   if(!targets.length){alert('送信可能な対象がありません（メールアドレス未登録）。');return;}
   await bulkSendReceipts(e,targets);
 }
-/* 共通の一括送信処理（1通ずつPNG生成→送信） */
+/* 共通の一括送信処理（1通ずつPNG生成→送信）
+   ★堅牢化: 送信前に履歴エントリを作成し、1通ごとに「送信済みフラグ＋履歴＋受取人レコード」を
+   都度保存する。これにより途中で中断・別セッションとの競合が起きても、どこまで送れたかが必ず残り、
+   「番号だけ採番されて送信記録が丸ごと消える」事故を防ぐ（従来は最後に1回だけ保存していた）。 */
 async function bulkSendReceipts(e,targets){
   const riskList=targets.map(p=>({p,w:receiptCharWarning(p)})).filter(x=>x.w);
   if(riskList.length&&!confirm('【文字化けの可能性】以下の方の宛名・但し書きに絵文字・特殊文字が含まれています：\n'+riskList.map(x=>'　・'+(x.p.name||'')+'：'+x.w.join(' ')).join('\n')+'\n\n領収書画像（PNG）で正しく表示されない場合があります。各行の「プレビュー」で確認できます。\nこのまま一括発行を続けますか？'))return;
-  if(!confirm(targets.length+'名に領収書（PNG添付）を発行・送信します。\n※添付付きのため1通ずつ順に送信します（'+targets.length+'通で1〜2分程度かかる場合があります）'))return;
+  if(!confirm(targets.length+'名に領収書（PNG添付）を発行・送信します。\n※添付付きのため1通ずつ順に送信します（'+targets.length+'通で1〜2分程度かかる場合があります）\n※送信中はこのタブを閉じたり他の管理画面を操作したりしないでください。'))return;
   const recs=targets.map(p=>({p,mid:uid(),wasDirty:!!p.receipt.dirty,prevNo:receiptDisplayNo(p)}));
   recs.forEach(({p})=>issueReceiptNo(p)); // 発行順に連番を採番（内容不変ならそのままの番号）
-  const now=new Date().toISOString();let okCnt=0,ngCnt=0;const rcpts=[];
-  for(const {p,mid,wasDirty,prevNo} of recs){
+  const now=new Date().toISOString();let okCnt=0,ngCnt=0;
+  // 送信前に履歴を作成（status:'sending'）。以降1通ごとに更新・保存する。
+  const logEntry={id:uid(),at:now,kind:'領収書（一括・PNG添付）',subject:'【領収書】'+e.name,
+    body:'一括発行 0/'+recs.length+'件 送信中…',count:recs.length,status:'sending',
+    recipients:recs.map(({p,mid})=>({to:p.email,name:p.name,pid:p.id,mid,ok:null}))};
+  e.mailLog=e.mailLog||[];e.mailLog.unshift(logEntry);save();
+  for(let i=0;i<recs.length;i++){
+    const {p,mid,wasDirty,prevNo}=recs[i];
     const png=await receiptPngBase64(e,p);
     const dispNo=receiptDisplayNo(p);
     const payload={type:'receipt',to:p.email,subject:mergeReceipt(receiptMailSubjTpl(p),e,p),event:{name:e.name,date:e.date},receipt:{no:dispNo,name:rcptName(p),amount:p.receipt.amount??p.amount,note:rcptNote(p)},
@@ -1837,17 +1846,20 @@ async function bulkSendReceipts(e,targets){
     const ok=!!r.ok;
     if(ok){p.receipt.issued=true;p.receipt.issuedAt=now;p.receipt.sentAt=new Date().toISOString();okCnt++;
       if(wasDirty&&prevNo!==dispNo)recendSend({event:e.name,no:prevNo,newNo:dispNo,addressee:rcptName(p),email:p.email,changes:(p.receipt.history||[]).slice(-3)},'/notify/receipt-edit'); // 修正→再発行のChatwork通知
+      if(workerBase())await recendSend({items:[receiptRecord(e,p)]},'/receipts'); // 受取人ページ用レコードも都度保存（中断しても個別に残る）
     }else ngCnt++;
-    rcpts.push({to:p.email,name:p.name,pid:p.id,mid,ok});
+    logEntry.recipients[i].ok=ok;
+    logEntry.body='一括発行 '+(okCnt+ngCnt)+'/'+recs.length+'件（成功'+okCnt+' / 失敗'+ngCnt+'）'+((okCnt+ngCnt)<recs.length?' 送信中…':'');
+    save(); // ★1通ごとに送信済みフラグ＋履歴を永続化（localStorageにも即保存されるので途中で止まっても残る）
   }
-  logMail(e,{kind:'領収書（一括・PNG添付）',subject:'【領収書】'+e.name,body:'一括発行 '+recs.length+'件（成功'+okCnt+' / 失敗'+ngCnt+'）',count:recs.length,status:'sent',recipients:rcpts});
-  await pushReceiptRecords(e,targets.filter(p=>p.receipt.sentAt));
+  logEntry.status='sent';logEntry.body='一括発行 '+recs.length+'件（成功'+okCnt+' / 失敗'+ngCnt+'）';save();
   render();alert('領収書の一括送信が完了しました（成功 '+okCnt+'件'+(ngCnt?' / 失敗 '+ngCnt+'件':'')+'）。');
 }
 
 /* ---------- Tab: メール履歴 ---------- */
 function mailStatusTag(L){
   if(L.status==='scheduled')return '<span class="tag warn">予約中</span>';
+  if(L.status==='sending')return '<span class="tag warn">送信中</span>';
   if(L.status==='sent')return '<span class="tag ok">送信済</span>';
   if(L.status==='canceled')return '<span class="tag gray">取消済</span>';
   if(L.status==='error')return '<span class="tag danger">失敗</span>';
